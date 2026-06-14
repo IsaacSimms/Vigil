@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="Vigil.Application/Vigil.Application.csproj" />
+  <Project Path="Vigil.Cli/Vigil.Cli.csproj" />
+  <Project Path="Vigil.Domain/Vigil.Domain.csproj" />
+  <Project Path="Vigil.Infrastructure/Vigil.Infrastructure.csproj" />
+  <Project Path="Vigil.Tests/Vigil.Tests.csproj" />
+</Solution>

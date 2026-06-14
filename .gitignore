@@ -427,3 +427,16 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Grok Build / agent tooling
+.grok/
+*.grok
+grok.log
+agent.log
+
+# Common .NET noise (if not already present)
+.vs/
+*.user
+*.suo
+bin/
+obj/
