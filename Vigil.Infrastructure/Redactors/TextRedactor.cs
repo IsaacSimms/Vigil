@@ -22,7 +22,7 @@ public class TextRedactor : IRedactor
 
     public EvidenceBundle Redact(EvidenceBundle bundle)
     {
-        if (bundle == null) return null;
+        if (bundle == null) throw new ArgumentNullException(nameof(bundle));
 
         var redactedArtifacts = new List<Vigil.Domain.Entities.EvidenceArtifact>();
         foreach (var artifact in bundle.Artifacts)

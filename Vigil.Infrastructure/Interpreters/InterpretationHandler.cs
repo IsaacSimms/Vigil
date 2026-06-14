@@ -13,7 +13,7 @@ namespace Vigil.Infrastructure.Interpreters;
 /// </summary>
 public abstract class InterpretationHandler
 {
-    private InterpretationHandler _next;
+    private InterpretationHandler? _next;
 
     public InterpretationHandler SetNext(InterpretationHandler handler)
     {
