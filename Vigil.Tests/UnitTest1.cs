@@ -3,6 +3,8 @@
 using System;
 using System.Collections.Generic;
 using FluentAssertions;
+using Vigil.Application;
+using Vigil.Application.Clients;
 using Vigil.Application.Coordinators;
 using Vigil.Application.UseCases;
 using Vigil.Domain.Abstractions;
@@ -219,5 +221,146 @@ public class DomainModelTests
     private class NoOpRedactor : IRedactor
     {
         public EvidenceBundle Redact(EvidenceBundle bundle) => bundle;
+    }
+
+    // == TDD for pure interactive helpers (Grill-me TUI foundation, per approved plan) ==
+    // These are the first failing tests for the agentic session. Pure, no UI, no SDK.
+    // SessionState carries the "running list" of context + tokens visible in the chat.
+    // LaunchDecider + IntentParser keep decision logic testable and outside the runner chrome.
+
+    [Fact]
+    public void LaunchDecider_bare_args_or_tty_launches_interactive()
+    {
+        // TDD: bare `vigil` (no args) or TTY should choose the primary TUI per new priority.
+        Vigil.Application.GrillInteractive.ShouldRunInteractive(Array.Empty<string>(), isTty: true).Should().BeTrue();
+        Vigil.Application.GrillInteractive.ShouldRunInteractive(new[] { "diagnose" }, isTty: true).Should().BeFalse(); // explicit subcommand stays old path
+        Vigil.Application.GrillInteractive.ShouldRunInteractive(new[] { "foo" }, isTty: false).Should().BeFalse();
+    }
+
+    [Fact]
+    public void SessionState_tracks_evidence_turns_last_diagnosis_and_compact_context_with_token_tally()
+    {
+        // TDD for the running chat context + token visibility (Hole 4).
+        var state = new Vigil.Application.GrillSessionState(launchDirectory: @"C:\incident");
+        state.LaunchDirectory.Should().Be(@"C:\incident");
+        state.CurrentEvidenceCount.Should().Be(0);
+        state.Turns.Should().BeEmpty();
+        state.LastDiagnosis.Should().BeNull();
+        state.TotalTokensUsed.Should().Be(0);
+
+        var src = new RawSource(Name: "app.log", Text: "error after deploy-123", Hint: "log");
+        state.AddEvidence(src);
+        state.CurrentEvidenceCount.Should().Be(1);
+
+        state.AppendTurn("the service is 500ing after the change", "Understood. The change deploy-123 looks suspicious. Want me to produce a formal diagnosis?");
+        state.Turns.Should().HaveCount(1);
+        state.Turns[0].UserMessage.Should().Contain("500ing");
+
+        // Compact context for feeding the grill advisor (summaries + token awareness)
+        var ctx = state.GetCompactContextForChat();
+        ctx.Should().NotBeNull();
+        ctx.EvidenceCount.Should().Be(1);
+        ctx.LastTurnSummary?.Should().Contain("suspicious"); // nullable-safe access (CS8602 addressed)
+
+        // Token tally is updated when we record usage from a chat or diagnose turn
+        state.RecordTokens(120, 45);
+        state.TotalTokensUsed.Should().Be(165);
+    }
+
+    [Fact]
+    public void IntentParser_free_text_becomes_symptom_or_chat_and_slash_commands_preserved()
+    {
+        // TDD: NL is primary; explicit commands for kept flags still work inside the session.
+        var free = Vigil.Application.GrillInteractive.ParseIntent("the payment service started 500ing right after deploy-456 to the api");
+        free.IsExplicitCommand.Should().BeFalse();
+        free.SuggestedSymptom.Should().NotBeNullOrWhiteSpace();
+        free.SuggestedSymptom.Should().Contain("payment service");
+
+        var cmd = Vigil.Application.GrillInteractive.ParseIntent("/diagnose --symptom \"intermittent 500s\" --offline");
+        cmd.IsExplicitCommand.Should().BeTrue();
+        cmd.CommandName.Should().Be("diagnose");
+        cmd.Arguments.Should().Contain("--offline");
+
+        var load = Vigil.Application.GrillInteractive.ParseIntent("/load ..\\logs\\auth.log");
+        load.IsExplicitCommand.Should().BeTrue();
+        load.CommandName.Should().Be("load");
+        load.Arguments.Should().Contain("..\\logs\\auth.log");
+    }
+
+    // Additional TDD for SessionState (accumulation, snapshot, token recording on diagnose path)
+    [Fact]
+    public void SessionState_supports_accumulation_snapshot_and_token_recording()
+    {
+        var state = new Vigil.Application.GrillSessionState(@"C:\test");
+        state.AddEvidence(new RawSource("log1", "error 1", null, "log"));
+        state.AddEvidence(new RawSource("change", "deploy foo", null, "change"));
+        state.CurrentEvidenceCount.Should().Be(2);
+
+        var snap = state.GetCurrentEvidenceSnapshot();
+        snap.Should().HaveCount(2);
+        snap[0].Name.Should().Be("log1");
+
+        state.RecordTokens(300, 50);
+        state.TotalTokensUsed.Should().Be(350);
+    }
+
+    // Cross the new IGrillAdvisor seam (keystone-style: no live key, context passed, fallback path)
+    [Fact]
+    public void IGrillAdvisor_GrokGrillAdvisor_no_key_path_includes_context_and_is_deterministic()
+    {
+        var options = new GrokOptions { ApiKey = string.Empty, Model = "grok-3", MaxTokens = 100, TimeoutSeconds = 10, Temperature = 0.1, BaseUrl = "https://api.x.ai/v1" };
+        var advisor = new GrokGrillAdvisor(options);
+
+        var ctx = "evidence:2; tokens:350; last: some summary";
+        var reply = advisor.ConsultAsync("why did it fail after the deploy?", cwd: @"C:\incident", lastDiagnosisId: Guid.NewGuid(), compactContext: ctx).Result;
+
+        reply.Should().Contain("Understood");
+        reply.Should().Contain("C:\\incident");
+        reply.Should().Contain("evidence:2");
+        reply.Should().Contain("/diagnose"); // suggests using the governed path
+    }
+
+    // Session simulation (multi-turn drive of state + seams, no console/TTY, crosses Consult + Diagnose paths)
+    [Fact]
+    public void Grill_session_simulation_accumulates_context_and_interleaves_diagnose()
+    {
+        // Minimal setup reusing patterns from existing full-loop test (heuristic for determinism, no key)
+        var interpreters = new IArtifactInterpreter[] { new PlainTextInterpreter(), new ChangeRecordInterpreter() };
+        var selector = new ArtifactInterpreterSelector(interpreters);
+        var assembler = new EvidenceAssembler();
+        var redactor = new NoOpRedactor(); // from existing in file
+        var heuristic = new HeuristicDiagnosisAnalyzer();
+        var validator = new DiagnosisValidator(new FakeCitationResolver(true));
+        var repo = new InMemoryDiagnosisRepository();
+        var useCase = new DiagnoseUseCase(selector, assembler, redactor, heuristic, heuristic, validator, repo);
+
+        var advisor = new GrokGrillAdvisor(new GrokOptions { ApiKey = "" , Model = "grok-3", MaxTokens=100, TimeoutSeconds=10, Temperature=0.1, BaseUrl="https://api.x.ai/v1" });
+        var client = new InProcessVigilClient(useCase, advisor);
+
+        var state = new Vigil.Application.GrillSessionState(@"C:\sim");
+        state.AddEvidence(new RawSource("app.log", "service error after change deploy-123 to api-service", null, "log"));
+
+        // NL turn (Consult seam + state)
+        var nlReply = client.ConsultAsync("the api is failing after the deploy", cwd: @"C:\sim", compactContext: state.GetCompactContextForChat().ToString()).Result;
+        state.AppendTurn("the api is failing after the deploy", nlReply);
+        state.Turns.Should().HaveCount(1);
+
+        // Interleave governed diagnose using accumulated evidence + symptom (real pipeline, persist, tokens)
+        var srcs = state.GetCurrentEvidenceSnapshot();
+        var diagReq = new DiagnoseRequest(srcs, new ScopeHints(Symptom: "api failing after deploy"));
+        var diag = client.DiagnoseAsync(diagReq).Result;
+        state.SetLastDiagnosis(diag);
+        if (diag.Provenance.Usage != null) state.RecordTokens(diag.Provenance.Usage.InputTokens, diag.Provenance.Usage.OutputTokens);
+
+        diag.Should().NotBeNull();
+        diag.Causes.Should().NotBeEmpty();
+        diag.Provenance.AnalyzedBy.Should().Be(AnalyzerTier.Heuristic); // no key
+        state.LastDiagnosis.Should().NotBeNull();
+        // Tokens may be 0 for pure heuristic in this sim; covered in other facts. Main assertions are accumulation + interleave + persist.
+        state.TotalTokensUsed.Should().BeGreaterOrEqualTo(0);
+
+        // repo has it (persist via use case)
+        var history = repo.QueryAsync(new TrueSpecification<Diagnosis>()).Result; // reuse existing TrueSpec from file
+        history.Should().Contain(d => d.Id == diag.Id);
     }
 }

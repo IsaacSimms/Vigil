@@ -1,157 +1,190 @@
 # Vigil
 
-**An incident-diagnosis engine for systems and platform work.**
+**An incident-diagnosis engine for systems and platform work — now with an interactive "Grill-me" TUI as the primary experience.**
 
-Vigil takes heterogeneous evidence about a *known* incident (logs, change records, code, configs, stack traces, screenshots) and returns a **governed, cited, ranked diagnosis** — what most likely broke, why, and the specific records that support each conclusion.
+Vigil helps you figure out what broke by feeding it heterogeneous evidence (logs, change records, configs, code, etc.). It returns governed, cited, ranked diagnoses with a deterministic validation gate, honest provenance, redaction before any model egress, and a zero-cost heuristic fallback.
 
-It is deliberately built as *infrastructure*, not a chat session. Every claim is cited, output is capped and validated, secrets are redacted before leaving the machine, and a local heuristic fallback ensures sensitive incidents can be analyzed with nothing leaving the box.
+The **primary way to use Vigil is the interactive Grill-me TUI** (launch with bare `vigil` or `dotnet run --project Vigil.Cli` in a target directory). Talk to it in natural language. It maintains live session state (accumulated evidence, conversation turns, running token usage, compact context for the LLM). Use `/diagnose` (or just describe the problem) to trigger the full governed pipeline at any time. Slash commands keep power-user flags and workflows inside the conversation.
 
-## Architecture Overview
+One-shot/scripted usage (`vigil diagnose ...`) is fully preserved for pipes, CI, automation, and power users.
 
-Vigil follows strict **Clean / Onion architecture** with dependencies pointing inward only (enforced by project references).
+## Quick Start (Interactive Grill-me Session — Primary UX)
 
-- **Vigil.Domain** — Pure core. Entities (`EvidenceArtifact`, `Diagnosis`, `CandidateCause`), value objects (`Confidence`, `Citation`, `AnalyzerProvenance`), enumerations, and all abstractions. No external references.
-- **Vigil.Application** — Orchestration only. `DiagnoseUseCase`, `EvidenceAssembler` (rank + cap + exclusions), `DiagnosisValidator` (deterministic citation gate), `DiagnosisQuery`.
-- **Vigil.Infrastructure** — Concrete details and adapters.
-  - Artifact interpreters (Strategy pattern) + `ArtifactInterpreterSelector` (Simple Factory).
-  - Chain of Responsibility + Template Method for per-artifact processing.
-  - `GrokDiagnosisAnalyzer` (Adapter) — uses the official OpenAI NuGet SDK pointed at xAI (`https://api.x.ai/v1`).
-  - `HeuristicDiagnosisAnalyzer` — proximity-based, zero-cost, Liskov-substitute fallback.
-  - In-memory `IDiagnosisRepository` (EF Core + SQLite is a later swap behind the same seam).
-  - `TextRedactor`.
-- **Vigil.Cli** — Presentation only (Spectre.Console.Cli). Thin commands. All business logic lives behind the `IVigilClient` seam.
+```powershell
+# 1. Set your xAI key (optional but enables real Grok for NL turns; without it you get heuristic + full /diagnose path)
+$env:XAI_API_KEY = "xai-your-key-here"
 
-### Key Seams (Strategy + Adapter)
+# 2. cd into the directory with your incident context
+cd C:\path\to\my\incident
 
-- `IDiagnosisAnalyzer` — Model vs. heuristic (the primary Seam).
-- `IArtifactInterpreter` — Heterogeneous input formats.
-- `IVigilClient` — Transport (in-process by default; HTTP over optional `Vigil.Api` designed but not built in v1).
+# 3. Launch the TUI (bare command = interactive session)
+dotnet run --project Vigil.Cli
+# or, after publish: .\vigil   (or vigil if on PATH)
 
-All third-party types (OpenAI SDK, etc.) are confined inside Infrastructure. The Domain owns the interfaces.
+# Inside the session:
+the payment service started 500ing right after deploy-456 to the api
+/status
+/load Docs\TestFiles\SimpleLogIncident\app.log
+/load Docs\TestFiles\SimpleLogIncident\changes.txt
+/diagnose --symptom "intermittent 500s after the change"
+/status
+exit
+```
 
-The model is the only stochastic element. Everything around it — evidence assembly, citation validation, output caps, provenance — is deterministic and testable.
+The session shows a banner with the launch directory, tracks evidence count + turns + **running token usage + compact context** (passed to every NL turn), and lets you interleave free conversation with formal diagnoses.
 
-## Features (v1)
+## Using the Grill-me TUI
 
-- Pipe-first CLI (stdin + repeatable `--logs`, `--changes`, `--image` flags).
-- Text evidence supported (JSON, CSV, syslog, plain text, change records).
-- Automatic format detection via `IArtifactInterpreter` strategies.
-- Ranked, cited diagnoses (≤5 causes, UUID-backed citations).
-- Deterministic validation gate (citation resolution, grounding checks, truncation).
-- `--dry-run` (preview bundle + redactions/exclusions without a model call).
-- `--offline` (force heuristic, nothing leaves the machine).
-- `--json` output for piping into other tools.
-- Honest provenance (`AnalyzedBy: Model | Heuristic`, `FallbackReason`, token usage).
-- Redaction before egress (text secrets masked; images not auto-redacted in v1).
-- Institutional memory via in-memory repository + `ISpecification<Diagnosis>` queries (EF later).
-- Zero-cost heuristic baseline that is a true substitute for the model tier.
+### Launch
+- `cd /your/dir; dotnet run --project Vigil.Cli` (or published `vigil`)
+- No args or bare invocation in an interactive terminal enters the TUI (the guard in Program.cs).
+- Subcommands (`vigil diagnose ...`) bypass the TUI for scripted use.
+
+### Natural Language (Primary Input)
+Just type. Your words become the query + context for the advisor (Grok when key present, or informative heuristic stub). The runner passes the current `GrillSessionState` (cwd, loaded evidence summaries, prior turns, token tally, last formal diagnosis) on every turn via `compactContext`.
+
+Example flow:
+```
+the api is throwing timeouts after the config change last night
+I suspect the DB pool
+/status   # see evidence, tokens, last diagnosis
+```
+
+The LLM (via `IGrillAdvisor` / `GrokGrillAdvisor`) acts as a debugging partner: references context, suggests next evidence, recommends formal `/diagnose` when a cited root cause makes sense.
+
+### Session Commands (Kept Flags + Power User Workflows)
+- `/load <relative-or-absolute-path>` — Read a file from disk (relative to launch dir), turn it into a `RawSource`, add to session evidence. Use real logs/changes from your incident dir.
+- `/diagnose [--symptom "text"] [--offline] [--dry-run]` — Force a full governed diagnosis using *current accumulated session evidence* + optional symptom. Runs the complete pipeline (interpreters, assembler/rank/cap, redaction, analyzer (Grok or heuristic), `DiagnosisValidator` gate with citation resolution + ≤5 truncate, provenance, persist to repo). Full tree + citations + provenance rendered inside the session.
+- `/status` — Evidence count, turns, total tokens used so far (running list from `SessionState`).
+- `/cwd` — Show launch directory.
+- `help` / `?` — List commands.
+- `exit` / `quit` / `q` — Leave (diagnoses produced during the session are already persisted via the core use case).
+
+All the old flags (`--offline`, `--dry-run`, `--json` where applicable) are honored inside `/diagnose`.
+
+### Tokens & Context (The "Running List")
+`SessionState` tracks:
+- Loaded evidence (`AddEvidence`, `GetCurrentEvidenceSnapshot`, `CurrentEvidenceCount`).
+- Conversation turns.
+- `TotalTokensUsed` (updated on formal diagnose paths via `Provenance.Usage`; chat turns contribute via the advisor in future extensions).
+- `GetCompactContextForChat()` — lightweight summary fed to the LLM on every NL turn so it can "remember" what you've loaded and discussed.
+
+This is visible via `/status` and passed automatically.
+
+### Examples with Committed Test Data
+From repo root (or any dir):
+```
+dotnet run --project Vigil.Cli
+/load Docs\TestFiles\SimpleLogIncident\app.log
+/load Docs\TestFiles\SimpleLogIncident\changes.txt
+/diagnose --symptom "payment failures after deploy"
+```
+
+Outputs a real Diagnosis (heuristic here; Grok when key set) with citations that resolve against the loaded artifacts.
+
+## One-Shot / Scripting Usage (Preserved for Compat + Power Users)
+
+All the original pipe-first behavior works unchanged:
+
+```powershell
+# Pipe evidence + flags
+type Docs\TestFiles\SimpleLogIncident\app.log | dotnet run --project Vigil.Cli -- diagnose --symptom "payment failures after deploy"
+
+# With changes
+type Docs\TestFiles\SimpleLogIncident\app.log | dotnet run --project Vigil.Cli -- diagnose --changes "Docs\TestFiles\SimpleLogIncident\changes.txt" --symptom "intermittent errors after change"
+
+# Dry-run (preview without model spend)
+type Docs\TestFiles\ComplexWithConfigAndChanges\auth.log | dotnet run --project Vigil.Cli -- diagnose --dry-run --symptom "auth failures"
+
+# Offline (force heuristic, nothing leaves the box)
+type Docs\TestFiles\CsvAndSyslog\metrics.csv | dotnet run --project Vigil.Cli -- diagnose --offline --symptom "test"
+
+# JSON for piping onward
+type Docs\TestFiles\JsonLogsDeployment\deploy.json | dotnet run --project Vigil.Cli -- diagnose --json --symptom "deployment issues"
+```
+
+See `vigil diagnose --help` for options. `--json` and the core pipeline remain the way to integrate Vigil as infrastructure.
 
 ## Local Setup (Windows + PowerShell)
 
-These steps get you building and running Vigil on your own machine.
+1. .NET 8 SDK.
+2. `git clone ... ; cd Vigil`
+3. `dotnet build`
+4. Set `XAI_API_KEY` (env var or User scope). Without it everything still works via the heuristic + full diagnosis path.
+5. `dotnet run --project Vigil.Cli` (bare) for TUI, or with `diagnose ...` for one-shot.
 
-### 1. Prerequisites
-- Install the **.NET 8 SDK** (https://dotnet.microsoft.com/download/dotnet/8.0)
-- A terminal that can run PowerShell (Windows Terminal, VS Code terminal, or classic PowerShell)
+### Running as a standalone `vigil` command (recommended)
 
-### 2. Get the code
-If you don't have it yet:
-```powershell
-git clone https://github.com/<your-org>/vigil.git
-cd vigil
-```
-
-(If the code is already on your machine, just `cd` into the folder that contains `Vigil.slnx` and the `Vigil.Cli` folder.)
-
-### 3. Build the project (first time)
-```powershell
-dotnet build
-```
-This restores packages and compiles everything. You should see "Build succeeded" at the end.
-
-### 4. Set your xAI API key (required for real Grok calls)
-
-Vigil looks **only** for the environment variable `XAI_API_KEY`.
-
-**Option A – Temporary (works right now in this terminal window):**
-```powershell
-$env:XAI_API_KEY = "xai-your-actual-key-here"
-```
-
-**Option B – Permanent for this user (recommended for development):**
-```powershell
-[Environment]::SetEnvironmentVariable("XAI_API_KEY", "xai-your-actual-key-here", "User")
-```
-**Important:** Close this PowerShell window completely and open a **brand new** one. The change is stored in the Windows Registry under your user profile and only new processes see it.
-
-Verify the key is visible in a new window:
-```powershell
-$env:XAI_API_KEY
-```
-
-If nothing is set, Vigil will automatically use the built-in heuristic analyzer instead (no internet, no cost, still produces output).
-
-### 5. Run it (quick local test with sample data)
-
-From the root folder, run a minimal test using the sample files that ship with the repo:
+For the best experience — especially the bare-command interactive TUI — publish Vigil as a self-contained executable and put it on your `PATH`:
 
 ```powershell
-# Using one of the built-in example folders we created for testing
-type Docs\TestFiles\SimpleLogIncident\app.log | dotnet run --project Vigil.Cli -- diagnose --symptom "payment failures after deploy"
+# From the repo root
+dotnet publish Vigil.Cli\Vigil.Cli.csproj `
+    -c Release `
+    -r win-x64 `
+    --self-contained true `
+    -p:PublishSingleFile=true `
+    -o .\publish
+
+# (Optional) Rename for convenience
+Rename-Item .\publish\Vigil.Cli.exe vigil.exe
+
+# Add .\publish (or wherever you put it) to your PATH, then you can do:
+cd C:\path\to\your\incident
+vigil                    # ← launches the Grill-me TUI (the primary way to use it)
+vigil diagnose --help    # ← one-shot / scripting still works
 ```
 
-Or with the change record too:
-```powershell
-type Docs\TestFiles\SimpleLogIncident\app.log | dotnet run --project Vigil.Cli -- diagnose --changes "Docs\TestFiles\SimpleLogIncident\changes.txt" --symptom "intermittent errors after change"
-```
+This produces a true standalone `.exe` that does **not** require .NET to be installed on the target machine. The bare `vigil` command will enter the interactive natural-language session exactly as designed.
 
-You should see a diagnosis tree in the console. If your `XAI_API_KEY` is set, it will say `Provenance: Model`. If not, it will say `Provenance: Heuristic`.
+You only need to do the publish step once (or whenever you pull new changes). After that, just use `vigil` like any other CLI tool.
 
-### 6. Common commands
+## Development on the Platform
 
-```powershell
-# See all options
-dotnet run --project Vigil.Cli -- diagnose --help
+Vigil is built for ambitious extension while keeping the core trustworthy.
 
-# Dry-run (see exactly what evidence would be sent, no AI call)
-type Docs\TestFiles\ComplexWithConfigAndChanges\auth.log | dotnet run --project Vigil.Cli -- diagnose --dry-run --symptom "auth failures"
+### Build & Test
+- `dotnet build`
+- `dotnet test` (currently 16 tests; includes original pipeline + new TUI helpers, `IGrillAdvisor` seam crossing, and multi-turn session simulations that drive state + Consult + Diagnose paths).
 
-# JSON output (easy to pipe elsewhere)
-type Docs\TestFiles\JsonLogsDeployment\deploy.json | dotnet run --project Vigil.Cli -- diagnose --json --symptom "deployment issues"
+### TDD Expectations
+Non-trivial behavior (new commands in the runner, advisor enhancements, context logic, seam interactions) is test-first with xUnit + FluentAssertions. The Interface (UL) is the test surface.
 
-# Force offline mode (never calls xAI, even if key is set)
-type Docs\TestFiles\CsvAndSyslog\metrics.csv | dotnet run --project Vigil.Cli -- diagnose --offline --symptom "test"
-```
+Existing keystone-style tests (recorded paths, heuristic doubles, validator gate) remain live.
 
-### 7. Build a standalone executable (optional)
+### Architecture (Heart Preserved, UX Evolved)
+- Strict onion (project refs enforced): Domain (entities + seams) → Application (orchestration + thin coordinators) → Infrastructure (adapters, Grok + heuristic, interpreters, repos) .
+- Presentation (`Vigil.Cli`) references Application for contracts and Infra **only** at composition root for DI.
+- Primary Seams (UL): `IDiagnosisAnalyzer`, `IArtifactInterpreter` + selector, `IVigilClient`, and the new `IGrillAdvisor` (for conversational NL).
+- All business logic for diagnosis stays in C# behind seams. The TUI runner in Cli is "thicker" (session state, intent parsing, context assembly, action dispatch) because the interactive Grill-me experience is the stated primary goal — this was an explicit user-approved loosening while keeping the heart (onion, testable seams, no SDK leakage past Infra, determinism around the model, title comments on important blocks, etc.).
+- `SessionState` + `GrillInteractive` (pure helpers in Application) are the reusable non-UI core of the TUI.
+- `GrokGrillAdvisor` is the Adapter for free-form chat (plain completions, context injected, good grill-me system prompt). The structured diagnosis path is untouched.
 
-If you want a .exe you can copy around without needing `dotnet run`:
+See `docs/Vigil-SystemsDesign.md` and the Mermaid diagrams for the locked core design. The interactive TUI layers on top without rewriting the trust contract.
 
-```powershell
-dotnet publish Vigil.Cli\Vigil.Cli.csproj -c Release -o .\publish
-```
+### Extending the Platform
+- **Inside the TUI**: Edit the runner in `Vigil.Cli/Program.cs`. Add commands, improve NL heuristics, surface more from `state` (e.g. last full Diagnosis tree), wire `state.RecordTokens` for chat turns (extend `IGrillAdvisor` return type later if needed).
+- **New NL capabilities**: Implement/enhance `IGrillAdvisor` (or swap the Grok one). The runner already passes rich context on every turn.
+- **New evidence formats**: Add `IArtifactInterpreter` impls in Infrastructure + register in Program.cs composition root. The selector picks at runtime.
+- **Real advisor for NL**: The current `GrokGrillAdvisor` is the starting point. Add usage capture, streaming, optional tools that let the model suggest loads or trigger `/diagnose`, etc.
+- **Persistence / history in TUI**: Wire `DiagnosisQuery` + `ISpecification` into the runner (e.g. `/history similar`).
+- **Tests**: Add facts that cross the seams (like the new session simulation). For TUI-specific logic, drive the pure helpers + client directly (no console required).
+- Composition root (`Program.cs`) is the single place for DI choices (key presence, model vs heuristic, advisor, etc.).
 
-Then run it (still need the env var set in the same shell):
-```powershell
-type Docs\TestFiles\SimpleLogIncident\app.log | .\publish\Vigil.Cli.exe diagnose --symptom "test"
-```
+Follow title comments (`// == Title Here == //`), only `/// <summary>` at type/file level, xUnit+Fluent, etc.
 
+### Key Environment
+`XAI_API_KEY` only (never committed). Temp in shell or permanent User registry. Same mechanism works for production secrets.
 
-### Troubleshooting
+## Features (Current)
 
-- "No suitable interpreter" or weird output → make sure you're piping a file that matches one of the supported formats (plain text, JSON, CSV, syslog, or change records).
-- Still getting heuristic when you set the key → you must open a **new** PowerShell window after using the `SetEnvironmentVariable` command, or use the temporary `$env:XAI_API_KEY=...` in the current window.
-- Build errors → run `dotnet restore` then `dotnet build` again.
-
-You now have a working local build and can feed it the sample files in `Docs\TestFiles\` or any real logs/changes you have on disk.
-
-## Development
-
-- Strict Clean/Onion architecture.
-- TDD with xUnit + FluentAssertions.
-- Title comments on every class and important block: `// == Title Here == //`.
-- See `AGENTS.md`, `CONTEXT.md`, and the design documents in `Docs/` for full conventions and architecture rationale.
-- The design is intentionally locked; changes to seams or core contracts require re-approval.
+- **Primary**: Interactive Grill-me TUI with natural language, live `GrillSessionState` (evidence, turns, running tokens + context passed to LLM), `/load` from launch dir, easy interleaving with full governed diagnoses.
+- Full diagnose pipeline (text evidence, auto-interpret, rank+cap, redaction, Grok or heuristic, deterministic citation validation + ≤5 cap, provenance, in-memory persist + query).
+- Seams for evolution (analyzer, interpreters, client transport, now grill advisor).
+- `--offline` / heuristic always available.
+- `--dry-run`, `--json`, etc. in both TUI and one-shot.
+- Zero-cost, honest Liskov-substitute heuristic baseline.
+- All third-party (OpenAI SDK) confined to Infrastructure.
 
 ## License
 
@@ -159,4 +192,6 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
-Built following the detailed design in `Docs/Vigil-SystemsDesign.md` and the Mermaid diagrams. The architecture was deliberately shaped for depth at the seams so the AI provider, input formats, and transport can evolve independently while the governance and verification contract remains stable.
+Built following the design in `docs/`. The core (governed diagnosis, seams, validation gate) remains the trustworthy heart. The interactive TUI is the new primary workflow for figuring things out in natural language while still giving you the rigorous cited output on demand.
+
+For the latest design notes see the plan artifacts and `docs/Vigil-SystemsDesign.md`.

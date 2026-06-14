@@ -23,10 +23,11 @@ All agents and humans working in this repository must internalize and follow the
   Use the xUnit test framework together with FluentAssertions for readable assertions.  
   Keystone tests (recorded model responses against the validator + seam) are especially important and must remain live without requiring a real API key.
 
-- **Spectre.Console.Cli for CLI; no business logic in presentation.**  
-  The command-line interface is built exclusively with Spectre.Console.Cli.  
-  Commands are thin: they parse arguments/flags, gather raw sources (stdin + `--logs`, `--changes`, `--image`, etc.), construct a `DiagnoseRequest` (or equivalent), call `IVigilClient.DiagnoseAsync(...)` (or the query method), and render the `Diagnosis` (human tree view or `--json`).  
-  **Zero business logic in presentation.** No interpretation, no assembly, no validation, no redaction, no analysis. All of that lives behind the `IVigilClient` seam in Application (or the implementations behind the Domain seams). The same rule applies to any future `Vigil.Api` controllers.
+- **Interactive TUI as primary UX + Spectre for CLI compat.**  
+  Bare `vigil` (or `dotnet run --project Vigil.Cli`) launches the agentic Grill-me TUI (natural language primary, SessionState for context/tokens/evidence, commands like /load /diagnose for interleaving).  
+  Spectre.Console.Cli subcommands (`diagnose` etc.) are kept thin for scripts/pipes/CI/power users (parse + gather + call seam + render).  
+  The TUI runner is intentionally "thicker" (state, intent, context assembly, dispatch) per user-approved priority for the interactive experience while the core diagnosis pipeline/seams remain behind `IVigilClient` + other Domain interfaces. Presentation still does zero core business logic for the governed path. All of that lives behind the seams in Application/Domain.  
+  **Zero business logic in presentation for the diagnosis engine.** (TUI orchestration for UX is the exception that proves the rule for the stated goal.) The same principle applies to future surfaces.
 
 ## Ubiquitous Language (UL) — Use These Terms Exactly
 

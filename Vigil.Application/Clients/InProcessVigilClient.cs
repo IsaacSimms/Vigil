@@ -15,11 +15,12 @@ namespace Vigil.Application.Clients;
 public class InProcessVigilClient : IVigilClient
 {
     private readonly DiagnoseUseCase _diagnoseUseCase;
-    // Query stub for v1 skeleton (full in later phase)
+    private readonly IGrillAdvisor _grillAdvisor;
 
-    public InProcessVigilClient(DiagnoseUseCase diagnoseUseCase, object? query = null)
+    public InProcessVigilClient(DiagnoseUseCase diagnoseUseCase, IGrillAdvisor grillAdvisor, object? query = null)
     {
         _diagnoseUseCase = diagnoseUseCase;
+        _grillAdvisor = grillAdvisor ?? throw new ArgumentNullException(nameof(grillAdvisor));
     }
 
     public async Task<Diagnosis> DiagnoseAsync(DiagnoseRequest request)
@@ -31,5 +32,10 @@ public class InProcessVigilClient : IVigilClient
     {
         // Stub for v1
         return Task.FromResult(Array.Empty<Diagnosis>());
+    }
+
+    public Task<string> ConsultAsync(string message, string? cwd = null, Guid? lastDiagnosisId = null, string? compactContext = null)
+    {
+        return _grillAdvisor.ConsultAsync(message, cwd, lastDiagnosisId, compactContext);
     }
 }

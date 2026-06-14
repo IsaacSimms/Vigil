@@ -1,8 +1,9 @@
 # Vigil — Project Context (for Agents, Developers & Green field Implementation)
 
-**Status:** Design finalized pre-implementation (see docs/ for authoritative sources).  
-**Architecture:** Strict Clean/Onion (five projects, inward-only dependencies enforced by references).  
-**Stack (v1):** C# / .NET 8, Spectre.Console.Cli, official OpenAI NuGet (xAI/Grok via base URL + XAI_API_KEY), xUnit + FluentAssertions, in-memory repositories (EF Core + SQLite deferred).
+**Status:** Design core finalized; primary workflow evolved to interactive Grill-me TUI (see README for current usage; docs/ for core design).  
+**Architecture:** Strict Clean/Onion (five projects, inward-only dependencies enforced by references). Heart preserved (seams, testable core, determinism around model).  
+**Stack (v1):** C# / .NET 8, Spectre.Console (TUI + .Cli for compat), official OpenAI NuGet (xAI/Grok via base URL + XAI_API_KEY), xUnit + FluentAssertions, in-memory repositories (EF Core + SQLite deferred).  
+Primary experience: bare `vigil` launches agentic TUI with NL to Grok + easy interleaving of governed diagnoses. One-shot `diagnose` preserved for scripts.
 
 This file is a concise, scannable summary extracted directly from the locked design artifacts. **Always read the primary sources first** before implementation work:
 
