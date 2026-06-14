@@ -33,7 +33,7 @@ flowchart TD
     subgraph INFRA["Vigil.Infrastructure — details"]
         INT["Artifact interpreters + selector"]
         REPO["Repositories<br/>(in-memory; EF/SQLite later)"]
-        AI["Anthropic adapter / heuristic analyzer"]
+        AI["Grok adapter / heuristic analyzer"]
         RED["Redactor"]
     end
 
@@ -190,25 +190,26 @@ classDiagram
         <<interface>>
         +AnalyzeAsync(EvidenceBundle bundle, string symptom) Task~AnalyzerResult~
     }
-    class AnthropicDiagnosisAnalyzer {
-        -IAnthropicClient client
-        -AnthropicOptions options
+    class GrokDiagnosisAnalyzer {
+        -OpenAIClient client
+        -GrokOptions options
         +AnalyzeAsync(EvidenceBundle bundle, string symptom) Task~AnalyzerResult~
-        -BuildContentBlocks(EvidenceBundle bundle) IReadOnlyList~ContentBlock~
-        -BuildDiagnosisTool() ToolSchema
-        -MapToRawDiagnosis(ToolUseResponse response) RawDiagnosis
+        -BuildContentBlocks(EvidenceBundle bundle) IReadOnlyList~ChatMessageContentPart~
+        -BuildDiagnosisTool() ChatTool
+        -MapToRawDiagnosis(ChatCompletion response) RawDiagnosis
         -DetectMediaType(byte[] bytes) string
     }
     class HeuristicDiagnosisAnalyzer {
         +AnalyzeAsync(EvidenceBundle bundle, string symptom) Task~AnalyzerResult~
         -ScoreByProximity(EvidenceArtifact artifact, DateTimeOffset firstError) double
     }
-    class AnthropicOptions {
+    class GrokOptions {
         +string Model
         +int MaxTokens
         +int TimeoutSeconds
         +double Temperature
         +string ApiKey
+        +string BaseUrl
     }
     class AnalyzerResult {
         +bool IsSuccess
@@ -222,15 +223,15 @@ classDiagram
         +IReadOnlyList~CandidateCause~ Causes
     }
 
-    IDiagnosisAnalyzer <|.. AnthropicDiagnosisAnalyzer
+    IDiagnosisAnalyzer <|.. GrokDiagnosisAnalyzer
     IDiagnosisAnalyzer <|.. HeuristicDiagnosisAnalyzer
-    AnthropicDiagnosisAnalyzer --> AnthropicOptions
-    AnthropicDiagnosisAnalyzer ..> AnalyzerResult : returns
+    GrokDiagnosisAnalyzer --> GrokOptions
+    GrokDiagnosisAnalyzer ..> AnalyzerResult : returns
     HeuristicDiagnosisAnalyzer ..> AnalyzerResult : returns
     AnalyzerResult --> RawDiagnosis
 ```
 
-> **Teaching note (state in the doc, not the diagram):** `IAnthropicClient`, `ContentBlock`, `ToolSchema`, and `ToolUseResponse` are SDK-facing types. They appear **only** as private members/return types of `AnthropicDiagnosisAnalyzer`. That confinement is the Adapter pattern working: no SDK type crosses the `IDiagnosisAnalyzer` seam into Application or Domain.
+> **Teaching note (state in the doc, not the diagram):** `OpenAIClient` (configured with xAI base URL), `ChatMessageContentPart`, `ChatTool`, and `ChatCompletion` are SDK-facing types from the official OpenAI NuGet. They appear **only** as private members/return types of `GrokDiagnosisAnalyzer`. That confinement is the Adapter pattern working: no SDK type crosses the `IDiagnosisAnalyzer` seam into Application or Domain. The adapter points the client at `https://api.x.ai/v1` and authenticates with `XAI_API_KEY`.
 
 ---
 
@@ -471,7 +472,7 @@ gantt
     Interpreters + selector + CoR    :w6b, after w6a, 2d
     Assembler (rank + cap)           :w6c, after w6b, 1d
     In-memory repositories           :w6d, after w6b, 1d
-    Anthropic adapter (tool use)     :w6e, after w6c, 2d
+    Grok adapter (tool use)     :w6e, after w6c, 2d
     Heuristic analyzer               :w6f, after w6c, 1d
     Validation gate                  :w6g, after w6e, 1d
     CLI diagnose + history           :w6h, after w6g, 1d

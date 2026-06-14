@@ -11,7 +11,7 @@ Operational infrastructure emits a constant trail of evidence — diagnostic log
 
 Vigil is the tool that does that reconstruction. An engineer hands it the evidence they have about a problem, and Vigil returns a **governed, cited, ranked diagnosis**: what most likely broke, why, and the specific records that support each conclusion.
 
-The accepted evidence is bounded only by what the active analyzer can read. With the Claude model that means text and images — so logs, change records, code, configs, stack traces, and screenshots are all first-class inputs. No single artifact type is the center; change records are one `Kind` among many.
+The accepted evidence is bounded only by what the active analyzer can read. With the Grok model that means text and images — so logs, change records, code, configs, stack traces, and screenshots are all first-class inputs. No single artifact type is the center; change records are one `Kind` among many.
 
 ### The thesis: model as infrastructure, not conversation
 
@@ -61,7 +61,7 @@ flowchart TD
     subgraph INFRA["Vigil.Infrastructure — details"]
         INT["Artifact interpreters"]
         REPO["Repositories (in-memory; EF/SQLite later)"]
-        AI["Anthropic adapter / heuristic analyzer"]
+        AI["Grok adapter / heuristic analyzer"]
         RED["Redactor"]
     end
 
@@ -281,7 +281,7 @@ The floor: **everything the engineer sees has at least one real record behind it
 
 ## 7. The AI integration (Adapter)
 
-The Anthropic adapter (`AnthropicDiagnosisAnalyzer`, Infrastructure) translates the SDK into the Domain's `IDiagnosisAnalyzer` interface so SDK types never leak inward.
+The Grok adapter (`GrokDiagnosisAnalyzer`, Infrastructure) translates the SDK into the Domain's `IDiagnosisAnalyzer` interface so SDK types never leak inward.
 
 ```mermaid
 classDiagram
@@ -289,22 +289,22 @@ classDiagram
         <<interface>>
         +AnalyzeAsync(EvidenceBundle, string? symptom) Task~AnalyzerResult~
     }
-    class AnthropicDiagnosisAnalyzer {
-        -AnthropicClient client
-        -AnthropicOptions options
+    class GrokDiagnosisAnalyzer {
+        -OpenAIClient client
+        -GrokOptions options
         +AnalyzeAsync(...) Task~AnalyzerResult~
     }
     class HeuristicDiagnosisAnalyzer {
         +AnalyzeAsync(...) Task~AnalyzerResult~
     }
-    IDiagnosisAnalyzer <|.. AnthropicDiagnosisAnalyzer
+    IDiagnosisAnalyzer <|.. GrokDiagnosisAnalyzer
     IDiagnosisAnalyzer <|.. HeuristicDiagnosisAnalyzer
-    AnthropicDiagnosisAnalyzer --> AnthropicOptions
+    GrokDiagnosisAnalyzer --> GrokOptions
 ```
 
 How the model performs the diagnosis, specifically:
 
-- **Multimodal input.** The bundle is serialized into Messages API content blocks — text blocks for logs/code/change records/configs/stack traces, base64 image blocks for screenshots. **Media type is detected from the image's magic bytes, not its file extension** (a PNG sent as `image/jpeg` is a hard 400; this is one of the most common vision-integration bugs). Images are validated for size and dimensions before the block is built.
+- **Multimodal input.** The bundle is serialized into chat completion message content parts — text parts for logs/code/change records/configs/stack traces, base64 image parts for screenshots. **Media type is detected from the image's magic bytes, not its file extension** (a PNG sent as `image/jpeg` is a hard 400; this is one of the most common vision-integration bugs). Images are validated for size and dimensions before the part is built.
 - **Structured output via tool use.** A tool is defined whose input schema *is* the `Diagnosis` shape — ranked causes, each with confidence, severity, category, and citations. The model is constrained to emit JSON matching that schema. There is no free-text-then-parse step; malformed output fails deserialization deterministically at the validation gate.
 - **Determinism levers.** Low temperature; the schema constraint; the citation-grounding requirement (the prompt instructs the model to cite the artifact IDs it relied on); the ≤5 cap requested in-prompt and enforced after.
 - **Failure handling.** SDK exceptions — timeout, refusal, API unavailable, missing key — are caught at the adapter boundary and translated into a typed `AnalyzerResult` failure. SDK exception types never propagate past Infrastructure. On failure the use case falls back to the heuristic tier and stamps `FallbackReason` onto the diagnosis.
@@ -313,10 +313,10 @@ How the model performs the diagnosis, specifically:
 
 The key is a secret and is treated as a cross-cutting infrastructure concern owned by the composition root.
 
-- **Never hard-coded; never in a file inside the repo.** The adapter receives an `AnthropicOptions` object (the .NET options pattern) injected at the composition root, holding the API key plus non-secret knobs (model, max tokens, timeout). It does not go looking for the key, which also keeps it unit-testable.
-- **Config layering, secret out of the tree.** `appsettings.json` is committed and holds only non-secrets (model, max-tokens, timeout). Local development supplies the key via the `ANTHROPIC_API_KEY` environment variable (read automatically by the SDK) or .NET User Secrets (stored in the user profile, outside the project directory, so it cannot be committed). Production/cloud uses a secret manager (e.g. Azure Key Vault) surfaced through the same configuration system — only the *provider* changes, never the adapter code.
+- **Never hard-coded; never in a file inside the repo.** The adapter receives a `GrokOptions` object (the .NET options pattern) injected at the composition root, holding the API key plus non-secret knobs (model, max tokens, timeout, optional base URL override). It does not go looking for the key, which also keeps it unit-testable. The adapter uses the official `OpenAI` NuGet client, configured at construction time to target the xAI endpoint (`https://api.x.ai/v1`) while presenting the same `IDiagnosisAnalyzer` contract.
+- **Config layering, secret out of the tree.** `appsettings.json` is committed and holds only non-secrets (model, max-tokens, timeout). Local development supplies the key via the `XAI_API_KEY` environment variable or .NET User Secrets (stored in the user profile, outside the project directory, so it cannot be committed). Production/cloud uses a secret manager (e.g. Azure Key Vault) surfaced through the same configuration system — only the *provider* changes, never the adapter code.
 - **No key → offline, not a crash.** If no key is configured, the composition root defaults to the heuristic `IDiagnosisAnalyzer` and tells the user plainly. The auth concern resolves through an existing seam.
-- **Cost is metered per token** (input = bundle + prompt, output = diagnosis) against the account the key belongs to; there is no per-call invoice. The architecture already bounds cost: rank-and-cap bounds input tokens, the ≤5 cap and max-tokens bound output tokens, the heuristic/offline tier costs zero, and `--dry-run` previews the bundle without spending a call. Model selection is the one cost knob, exposed in `AnthropicOptions` as config. Token `usage` from the response is captured onto `AnalyzerProvenance` so Vigil observes its own cost per run.
+- **Cost is metered per token** (input = bundle + prompt, output = diagnosis) against the account the key belongs to; there is no per-call invoice. The architecture already bounds cost: rank-and-cap bounds input tokens, the ≤5 cap and max-tokens bound output tokens, the heuristic/offline tier costs zero, and `--dry-run` previews the bundle without spending a call. Model selection is the one cost knob, exposed in `GrokOptions` as config (typical values: `grok-4.3` or `grok-3-latest`). Token `usage` from the response is captured onto `AnalyzerProvenance` so Vigil observes its own cost per run.
 
 ---
 
@@ -324,7 +324,7 @@ The key is a secret and is treated as a cross-cutting infrastructure concern own
 
 - **Scoping is by optional hints, not gates.** `--resource`, a time window, and a free-text `--symptom` narrow assembly when supplied. If omitted, assembly includes everything provided and ranks by intrinsic signals, and the model self-determines scope. Under-specifying is safe **because of the citation floor** — a model that wanders and invents a cause is caught at the validation gate. The grounding contract is what buys the freedom to under-specify.
 - **Overflow → rank-and-cap (v1).** The same relevance ranking that orders the bundle decides what survives a token budget; exclusions are reported. Map-reduce over summarized chunks is a future option behind the same seam.
-- **Redaction runs in the core, immediately before the adapter call** — never in presentation. There are two hops and only one is a boundary: presentation → core carries raw data but never leaves the machine (local / in-process, not an egress); core → Anthropic is the external egress, and redaction is upstream of it.
+- **Redaction runs in the core, immediately before the adapter call** — never in presentation. There are two hops and only one is a boundary: presentation → core carries raw data but never leaves the machine (local / in-process, not an egress); core → xAI (Grok) is the external egress, and redaction is upstream of it.
 - **Images are not auto-redacted in v1.** Regex masking cannot see a token in a screenshot. v1's honest stance: text is masked; images are sent with a loud warning; `--offline` refuses to send images at all. OCR-based image masking lives behind the same `IRedactor` seam for later. Images will not quietly carry secrets past the egress boundary.
 - **Future remote-host caveat.** If `Vigil.Api` is ever hosted remotely, the presentation → core hop becomes a network egress too, at which point client-side redaction becomes an option behind the same `IRedactor` seam. Out of v1 scope; the seam makes it a later config decision, not a rewrite.
 
@@ -408,7 +408,7 @@ Each pattern is led by the *axis of change it isolates* — the test of whether 
 | **Simple Factory (selection)** | `ArtifactInterpreterSelector` | Selecting an interpreter via `CanParse` so callers never branch on format. (Selection among existing strategies — explicitly **not** GoF Factory Method; it does not defer instantiation to subclasses.) |
 | **Chain of Responsibility** (short-circuit) | Interpretation pipeline | Each stage is one responsibility; stages are reorderable/insertable; a malformed artifact terminates the chain. |
 | **Template Method** | Interpretation handler base | The forward-on-`Continue` orchestration is fixed; per-stage `Process` varies. |
-| **Adapter** | `AnthropicDiagnosisAnalyzer` | The third-party SDK's shape varies independently of the Domain contract; SDK types stay out of the core. |
+| **Adapter** | `GrokDiagnosisAnalyzer` | The third-party SDK's shape (OpenAI-compatible) varies independently of the Domain contract; SDK types stay out of the core. The adapter targets xAI's Grok endpoint. |
 | **Repository** | `I*Repository` | Storage technology varies independently of use cases. |
 | **Command** | Spectre CLI commands | Each request is encapsulated as an object; aligns with the Spectre command model. |
 | **Specification + Composite** | `ISpecification<Diagnosis>` | Query/filter criteria vary and compose without predicate sprawl. |
