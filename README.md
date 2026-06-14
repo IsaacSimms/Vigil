@@ -117,10 +117,10 @@ dotnet run --project Vigil.Cli -- diagnose --help
 type Docs\TestFiles\ComplexWithConfigAndChanges\auth.log | dotnet run --project Vigil.Cli -- diagnose --dry-run --symptom "auth failures"
 
 # JSON output (easy to pipe elsewhere)
-dotnet run --project Vigil.Cli -- diagnose --json < Docs\TestFiles\JsonLogsDeployment\deploy.json --symptom "deployment issues"
+type Docs\TestFiles\JsonLogsDeployment\deploy.json | dotnet run --project Vigil.Cli -- diagnose --json --symptom "deployment issues"
 
 # Force offline mode (never calls xAI, even if key is set)
-dotnet run --project Vigil.Cli -- diagnose --offline --symptom "test" < Docs\TestFiles\CsvAndSyslog\metrics.csv
+type Docs\TestFiles\CsvAndSyslog\metrics.csv | dotnet run --project Vigil.Cli -- diagnose --offline --symptom "test"
 ```
 
 ### 7. Build a standalone executable (optional)
@@ -133,8 +133,9 @@ dotnet publish Vigil.Cli\Vigil.Cli.csproj -c Release -o .\publish
 
 Then run it (still need the env var set in the same shell):
 ```powershell
-.\publish\Vigil.Cli.exe diagnose --symptom "test" < Docs\TestFiles\SimpleLogIncident\app.log
+type Docs\TestFiles\SimpleLogIncident\app.log | .\publish\Vigil.Cli.exe diagnose --symptom "test"
 ```
+
 
 ### Troubleshooting
 
