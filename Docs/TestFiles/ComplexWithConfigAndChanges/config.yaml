@@ -1,0 +1,11 @@
+﻿server:
+  port: 8080
+auth:
+  jwt:
+    secret: 
+    expiry: 3600
+database:
+  timeout: 30
+  maxConnections: 100
+logging:
+  level: ERROR

@@ -1,0 +1,5 @@
+﻿timestamp,level,component,message
+2024-06-01 08:00:01,INFO,nginx,worker process started
+2024-06-01 08:05:12,ERROR,nginx,upstream timeout, server 192.168.1.10
+2024-06-01 08:05:15,WARN,nginx,connection reset by peer
+2024-06-01 08:10:00,ERROR,nginx,worker process exited with code 1

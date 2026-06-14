@@ -1,0 +1,2 @@
+﻿2024-06-01 09:58:00 - change deploy-789 to payment-service v2.3.1 on host web-01
+2024-06-01 09:59:30 - change config db-timeout to 5s in payment-service

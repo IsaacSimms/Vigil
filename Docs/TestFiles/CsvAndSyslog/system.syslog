@@ -1,0 +1,5 @@
+﻿Jun  1 08:00:01 host1 nginx: worker process started pid=1234
+Jun  1 08:05:12 host1 nginx: upstream timed out (110: Connection timed out)
+Jun  1 08:05:15 host1 nginx: client 10.0.0.5 closed keepalive connection
+Jun  1 08:10:00 host1 systemd: nginx.service: Main process exited, code=exited, status=1/FAILURE
+Jun  1 08:10:01 host1 systemd: nginx.service: Failed with result 'exit-code'.

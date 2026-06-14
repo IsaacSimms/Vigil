@@ -46,80 +46,103 @@ The model is the only stochastic element. Everything around it — evidence asse
 - Institutional memory via in-memory repository + `ISpecification<Diagnosis>` queries (EF later).
 - Zero-cost heuristic baseline that is a true substitute for the model tier.
 
-## Setup
+## Local Setup (Windows + PowerShell)
 
-### Prerequisites
-- .NET 8 SDK
+These steps get you building and running Vigil on your own machine.
 
-### Clone & Build
+### 1. Prerequisites
+- Install the **.NET 8 SDK** (https://dotnet.microsoft.com/download/dotnet/8.0)
+- A terminal that can run PowerShell (Windows Terminal, VS Code terminal, or classic PowerShell)
 
-```bash
+### 2. Get the code
+If you don't have it yet:
+```powershell
 git clone https://github.com/<your-org>/vigil.git
 cd vigil
+```
+
+(If the code is already on your machine, just `cd` into the folder that contains `Vigil.slnx` and the `Vigil.Cli` folder.)
+
+### 3. Build the project (first time)
+```powershell
 dotnet build
 ```
+This restores packages and compiles everything. You should see "Build succeeded" at the end.
 
-### Set your xAI API Key
+### 4. Set your xAI API key (required for real Grok calls)
 
-Vigil reads the key **exclusively** from the `XAI_API_KEY` environment variable.
+Vigil looks **only** for the environment variable `XAI_API_KEY`.
 
-**PowerShell (user level, persists across sessions):**
+**Option A – Temporary (works right now in this terminal window):**
+```powershell
+$env:XAI_API_KEY = "xai-your-actual-key-here"
+```
+
+**Option B – Permanent for this user (recommended for development):**
+```powershell
+[Environment]::SetEnvironmentVariable("XAI_API_KEY", "xai-your-actual-key-here", "User")
+```
+**Important:** Close this PowerShell window completely and open a **brand new** one. The change is stored in the Windows Registry under your user profile and only new processes see it.
+
+Verify the key is visible in a new window:
+```powershell
+$env:XAI_API_KEY
+```
+
+If nothing is set, Vigil will automatically use the built-in heuristic analyzer instead (no internet, no cost, still produces output).
+
+### 5. Run it (quick local test with sample data)
+
+From the root folder, run a minimal test using the sample files that ship with the repo:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("XAI_API_KEY", "xai-your-key-here", "User")
+# Using one of the built-in example folders we created for testing
+type Docs\TestFiles\SimpleLogIncident\app.log | dotnet run --project Vigil.Cli -- diagnose --symptom "payment failures after deploy"
 ```
 
-Restart your terminal.
+Or with the change record too:
+```powershell
+type Docs\TestFiles\SimpleLogIncident\app.log | dotnet run --project Vigil.Cli -- diagnose --changes "Docs\TestFiles\SimpleLogIncident\changes.txt" --symptom "intermittent errors after change"
+```
 
-**Temporary (current session only):**
+You should see a diagnosis tree in the console. If your `XAI_API_KEY` is set, it will say `Provenance: Model`. If not, it will say `Provenance: Heuristic`.
+
+### 6. Common commands
 
 ```powershell
-$env:XAI_API_KEY = "xai-your-key-here"
+# See all options
+dotnet run --project Vigil.Cli -- diagnose --help
+
+# Dry-run (see exactly what evidence would be sent, no AI call)
+type Docs\TestFiles\ComplexWithConfigAndChanges\auth.log | dotnet run --project Vigil.Cli -- diagnose --dry-run --symptom "auth failures"
+
+# JSON output (easy to pipe elsewhere)
+dotnet run --project Vigil.Cli -- diagnose --json < Docs\TestFiles\JsonLogsDeployment\deploy.json --symptom "deployment issues"
+
+# Force offline mode (never calls xAI, even if key is set)
+dotnet run --project Vigil.Cli -- diagnose --offline --symptom "test" < Docs\TestFiles\CsvAndSyslog\metrics.csv
 ```
 
-If the variable is not set (or empty), Vigil automatically falls back to the local heuristic analyzer (no API calls, no cost).
+### 7. Build a standalone executable (optional)
 
-**Production / CI**
-
-Set the same `XAI_API_KEY` environment variable in your deployment environment (Azure Key Vault, GitHub Actions secrets, Docker `-e`, Kubernetes Secret, etc.). The code never changes — only the provider of the value does.
-
-## Running
-
-### Basic usage
+If you want a .exe you can copy around without needing `dotnet run`:
 
 ```powershell
-# Pipe live evidence
-journalctl -u nginx --since "10 min ago" | dotnet run --project Vigil.Cli -- diagnose --symptom "intermittent 500s after deploy"
-
-# Multiple named sources
-dotnet run --project Vigil.Cli -- diagnose `
-  --logs "app.log" `
-  --changes "deploy.log" `
-  --symptom "outage after rollout"
+dotnet publish Vigil.Cli\Vigil.Cli.csproj -c Release -o .\publish
 ```
 
-### Useful flags
-
-- `--offline` — Force the heuristic (nothing leaves the machine).
-- `--dry-run` — Assemble + redact evidence and show exactly what would be sent (no model call).
-- `--json` — Machine-readable output (great for piping into tickets, notifiers, etc.).
-- `--symptom` — Free-text description of the observed symptom.
-
-### Example output (human)
-
-A ranked tree of causes with confidence, severity, category, and citations back to specific artifact IDs.
-
-### Example output (machine)
-
-```json
-{
-  "id": "...",
-  "subject": { "kind": "service", "identifier": "payment-api" },
-  "summary": "...",
-  "provenance": { "analyzedBy": "Model", "usage": { "inputTokens": 1240, "outputTokens": 312 } },
-  "causes": [ ... ]
-}
+Then run it (still need the env var set in the same shell):
+```powershell
+.\publish\Vigil.Cli.exe diagnose --symptom "test" < Docs\TestFiles\SimpleLogIncident\app.log
 ```
+
+### Troubleshooting
+
+- "No suitable interpreter" or weird output → make sure you're piping a file that matches one of the supported formats (plain text, JSON, CSV, syslog, or change records).
+- Still getting heuristic when you set the key → you must open a **new** PowerShell window after using the `SetEnvironmentVariable` command, or use the temporary `$env:XAI_API_KEY=...` in the current window.
+- Build errors → run `dotnet restore` then `dotnet build` again.
+
+You now have a working local build and can feed it the sample files in `Docs\TestFiles\` or any real logs/changes you have on disk.
 
 ## Development
 
