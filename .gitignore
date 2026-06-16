@@ -430,6 +430,7 @@ FodyWeavers.xsd
 
 # Grok Build / agent tooling
 .grok/
+mcps/
 *.grok
 grok.log
 agent.log

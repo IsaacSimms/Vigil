@@ -256,10 +256,12 @@ public class DomainModelTests
         state.Turns.Should().HaveCount(1);
         state.Turns[0].UserMessage.Should().Contain("500ing");
 
-        // Compact context for feeding the grill advisor (summaries + token awareness)
+        // Compact context for feeding the grill advisor (summaries + token awareness + bounded excerpts)
         var ctx = state.GetCompactContextForChat();
         ctx.Should().NotBeNull();
         ctx.EvidenceCount.Should().Be(1);
+        ctx.EvidenceExcerpts.Should().ContainSingle(e => e.FileName == "app.log" && e.Text.Contains("deploy-123"));
+        ctx.FormatForAdvisor().Should().Contain("excerpt[app.log]");
         ctx.LastTurnSummary?.Should().Contain("suspicious"); // nullable-safe access (CS8602 addressed)
 
         // Token tally is updated when we record usage from a chat or diagnose turn
@@ -285,6 +287,168 @@ public class DomainModelTests
         load.IsExplicitCommand.Should().BeTrue();
         load.CommandName.Should().Be("load");
         load.Arguments.Should().Contain("..\\logs\\auth.log");
+    }
+
+    // == TDD for NL path extraction + auto-load (Grill-me: detect paths before ConsultAsync) == //
+
+    [Fact]
+    public void ExtractFilePathCandidates_finds_absolute_relative_quoted_and_simple_filenames()
+    {
+        var input =
+            @"C:\Vigil\Vigil\Docs\TestFiles\SimpleLogIncident\app.log and C:\Vigil\Vigil\Docs\TestFiles\SimpleLogIncident\changes.txt. the entries labeled err are the priority";
+
+        var paths = GrillInteractive.ExtractFilePathCandidates(input);
+
+        paths.Should().HaveCount(2);
+        paths[0].Should().Be(@"C:\Vigil\Vigil\Docs\TestFiles\SimpleLogIncident\app.log");
+        paths[1].Should().Be(@"C:\Vigil\Vigil\Docs\TestFiles\SimpleLogIncident\changes.txt");
+    }
+
+    [Fact]
+    public void ExtractFilePathCandidates_handles_quotes_commas_and_mixed_separators()
+    {
+        var input = @"""app.log"", changes.txt; .\logs\auth.log and ../deploy/changes.txt";
+
+        var paths = GrillInteractive.ExtractFilePathCandidates(input);
+
+        paths.Should().Equal("app.log", "changes.txt", @".\logs\auth.log", @"../deploy/changes.txt");
+    }
+
+    [Fact]
+    public void ExtractFilePathCandidates_ignores_plain_language_without_path_tokens()
+    {
+        var input = "Tell me why the incident occurred after the deploy";
+
+        GrillInteractive.ExtractFilePathCandidates(input).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void TryExtractAndLoadPaths_loads_resolved_files_into_session_state()
+    {
+        var incidentDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "vigil-nl-load-" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(incidentDir);
+        var logPath = System.IO.Path.Combine(incidentDir, "app.log");
+        var changePath = System.IO.Path.Combine(incidentDir, "changes.txt");
+        System.IO.File.WriteAllText(logPath, "ERROR payment timeout");
+        System.IO.File.WriteAllText(changePath, "deploy-456 to payment-service");
+
+        try
+        {
+            var state = new GrillSessionState(incidentDir);
+            var input = $"look at {logPath} and changes.txt for err entries";
+
+            var result = GrillInteractive.TryExtractAndLoadPaths(input, state);
+
+            result.LoadedFileNames.Should().Equal("app.log", "changes.txt");
+            result.NotFoundPaths.Should().BeEmpty();
+            state.CurrentEvidenceCount.Should().Be(2);
+            state.GetCurrentEvidenceSnapshot()[0].Text.Should().Contain("ERROR");
+        }
+        finally
+        {
+            System.IO.Directory.Delete(incidentDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void TryExtractAndLoadPaths_skips_duplicates_and_reports_missing_paths()
+    {
+        var incidentDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "vigil-nl-load-" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(incidentDir);
+        System.IO.File.WriteAllText(System.IO.Path.Combine(incidentDir, "app.log"), "error line");
+
+        try
+        {
+            var state = new GrillSessionState(incidentDir);
+            state.AddEvidence(new RawSource("app.log", "already loaded", null, "loaded"));
+
+            var result = GrillInteractive.TryExtractAndLoadPaths("look at app.log and missing.txt", state);
+
+            result.LoadedFileNames.Should().BeEmpty();
+            result.SkippedAlreadyLoaded.Should().Contain("app.log");
+            result.NotFoundPaths.Should().Contain("missing.txt");
+            state.CurrentEvidenceCount.Should().Be(1);
+        }
+        finally
+        {
+            System.IO.Directory.Delete(incidentDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ShouldAttemptAutoLoad_requires_intent_or_explicit_path_syntax()
+    {
+        GrillInteractive.ShouldAttemptAutoLoad("the api is 500ing after deploy").Should().BeFalse();
+        GrillInteractive.ShouldAttemptAutoLoad("app.log and changes.txt").Should().BeFalse();
+        GrillInteractive.ShouldAttemptAutoLoad("look at app.log and changes.txt").Should().BeTrue();
+        GrillInteractive.ShouldAttemptAutoLoad(@"check C:\incident\app.log for errors").Should().BeTrue();
+    }
+
+    [Fact]
+    public void TryExtractAndLoadPaths_skips_when_no_load_intent()
+    {
+        var incidentDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "vigil-nl-load-" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(incidentDir);
+        System.IO.File.WriteAllText(System.IO.Path.Combine(incidentDir, "app.log"), "error line");
+
+        try
+        {
+            var state = new GrillSessionState(incidentDir);
+            var result = GrillInteractive.TryExtractAndLoadPaths("app.log and changes.txt", state);
+
+            result.ExtractedCandidates.Should().BeEmpty();
+            result.LoadedFileNames.Should().BeEmpty();
+            state.CurrentEvidenceCount.Should().Be(0);
+        }
+        finally
+        {
+            System.IO.Directory.Delete(incidentDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void TryExtractAndLoadPaths_skips_files_over_auto_load_size_cap()
+    {
+        var incidentDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "vigil-nl-load-" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(incidentDir);
+        var bigPath = System.IO.Path.Combine(incidentDir, "big.log");
+        System.IO.File.WriteAllText(bigPath, new string('x', (int)GrillSessionState.MaxAutoLoadBytes + 1));
+
+        try
+        {
+            var state = new GrillSessionState(incidentDir);
+            var result = GrillInteractive.TryExtractAndLoadPaths($"read {bigPath}", state);
+
+            result.LoadedFileNames.Should().BeEmpty();
+            result.SkippedTooLarge.Should().ContainSingle();
+            state.CurrentEvidenceCount.Should().Be(0);
+        }
+        finally
+        {
+            System.IO.Directory.Delete(incidentDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void LoadEvidenceFromPath_on_session_state_is_shared_by_explicit_load()
+    {
+        var incidentDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "vigil-nl-load-" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(incidentDir);
+        System.IO.File.WriteAllText(System.IO.Path.Combine(incidentDir, "app.log"), "loaded via shared path");
+
+        try
+        {
+            var state = new GrillSessionState(incidentDir);
+            var outcome = state.TryLoadEvidenceFromPath("app.log", hint: "loaded");
+
+            outcome.Loaded.Should().BeTrue();
+            outcome.FileName.Should().Be("app.log");
+            state.GetCurrentEvidenceSnapshot()[0].Text.Should().Contain("shared path");
+        }
+        finally
+        {
+            System.IO.Directory.Delete(incidentDir, recursive: true);
+        }
     }
 
     // Additional TDD for SessionState (accumulation, snapshot, token recording on diagnose path)
@@ -320,6 +484,168 @@ public class DomainModelTests
         reply.Should().Contain("/diagnose"); // suggests using the governed path
     }
 
+    // == TDD for in-session diagnose skill (flag parsing, NL intent, symptom chain, no sample injection) == //
+
+    [Fact]
+    public void ParseDiagnoseFlagsWithRemainder_extracts_quoted_symptom_and_boolean_flags()
+    {
+        var parsed = GrillInteractive.ParseDiagnoseFlagsWithRemainder(@"--symptom ""intermittent 500s"" --offline --dry-run");
+
+        parsed.Args.Symptom.Should().Be("intermittent 500s");
+        parsed.Args.Offline.Should().BeTrue();
+        parsed.Args.DryRun.Should().BeTrue();
+        parsed.Remainder.Should().BeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public void TryParseDiagnoseIntent_matches_verb_patterns_and_strips_prefix()
+    {
+        var result = GrillInteractive.TryParseDiagnoseIntent("diagnose me — the api is 500ing after deploy-456");
+
+        result.Should().NotBeNull();
+        result!.IsDiagnoseIntent.Should().BeTrue();
+        result.UtteranceRemainder.Should().Contain("api is 500ing");
+    }
+
+    [Fact]
+    public void TryParseDiagnoseIntent_returns_null_for_casual_chat()
+    {
+        GrillInteractive.TryParseDiagnoseIntent("the api is 500ing").Should().BeNull();
+        GrillInteractive.TryParseDiagnoseIntent("can you diagnose my cat").Should().BeNull();
+    }
+
+    [Fact]
+    public void ResolveSymptom_uses_priority_chain_flag_then_remainder_then_last_turn()
+    {
+        var state = new GrillSessionState(@"C:\incident");
+        state.AppendTurn("payment service started failing after deploy", "noted");
+
+        var fromFlag = GrillInteractive.ResolveSymptom(
+            new DiagnoseCommandArgs("flag symptom", false, false),
+            "remainder symptom",
+            state);
+        fromFlag.Symptom.Should().Be("flag symptom");
+        fromFlag.UsedGenericSymptomFallback.Should().BeFalse();
+
+        var fromRemainder = GrillInteractive.ResolveSymptom(
+            new DiagnoseCommandArgs(null, false, false),
+            "api timeouts after config change",
+            state);
+        fromRemainder.Symptom.Should().Be("api timeouts after config change");
+
+        var fromTurn = GrillInteractive.ResolveSymptom(
+            new DiagnoseCommandArgs(null, false, false),
+            null,
+            state);
+        fromTurn.Symptom.Should().Contain("payment service");
+    }
+
+    [Fact]
+    public void BuildDiagnoseRequest_never_injects_sample_evidence()
+    {
+        var state = new GrillSessionState(@"C:\incident");
+        var request = GrillInteractive.BuildDiagnoseRequest(
+            state,
+            new DiagnoseCommandArgs(null, true, false),
+            "symptom only");
+
+        request.Sources.Should().BeEmpty();
+        request.Offline.Should().BeTrue();
+        request.Hints.Symptom.Should().Be("symptom only");
+    }
+
+    [Fact]
+    public void Grill_session_simulation_nl_diagnose_intent_honors_offline_flag()
+    {
+        var interpreters = new IArtifactInterpreter[] { new PlainTextInterpreter(), new ChangeRecordInterpreter() };
+        var selector = new ArtifactInterpreterSelector(interpreters);
+        var assembler = new EvidenceAssembler();
+        var redactor = new NoOpRedactor();
+        var heuristic = new HeuristicDiagnosisAnalyzer();
+        var validator = new DiagnosisValidator(new FakeCitationResolver(true));
+        var repo = new InMemoryDiagnosisRepository();
+        var useCase = new DiagnoseUseCase(selector, assembler, redactor, heuristic, heuristic, validator, repo);
+        var advisor = new GrokGrillAdvisor(new GrokOptions { ApiKey = "", Model = "grok-3", MaxTokens = 100, TimeoutSeconds = 10, Temperature = 0.1, BaseUrl = "https://api.x.ai/v1" });
+        var client = new InProcessVigilClient(useCase, advisor);
+
+        var state = new GrillSessionState(@"C:\sim");
+        state.AddEvidence(new RawSource("app.log", "service error after change deploy-123 to api-service", null, "log"));
+
+        var intent = GrillInteractive.TryParseDiagnoseIntent("figure out what broke --offline");
+        intent.Should().NotBeNull();
+        var resolved = GrillInteractive.ResolveSymptom(intent!.Args, intent.UtteranceRemainder, state);
+        var request = GrillInteractive.BuildDiagnoseRequest(state, intent.Args, resolved.Symptom);
+
+        request.Offline.Should().BeTrue();
+        var diag = client.DiagnoseAsync(request).Result;
+        diag.Provenance.AnalyzedBy.Should().Be(AnalyzerTier.Heuristic);
+        diag.Causes.Should().NotBeEmpty();
+    }
+
+    // == TDD for /paste multi-line input (END terminator, evidence + bounded consult preview) == //
+
+    [Fact]
+    public void IsPasteEndMarker_matches_END_case_insensitive_only()
+    {
+        GrillInteractive.IsPasteEndMarker("END").Should().BeTrue();
+        GrillInteractive.IsPasteEndMarker("end").Should().BeTrue();
+        GrillInteractive.IsPasteEndMarker("  END  ").Should().BeTrue();
+        GrillInteractive.IsPasteEndMarker("END OF FILE").Should().BeFalse();
+        GrillInteractive.IsPasteEndMarker("").Should().BeFalse();
+    }
+
+    [Fact]
+    public void FinalizePastedLines_joins_and_trims()
+    {
+        var text = GrillInteractive.FinalizePastedLines(new[] { "ERROR line 1", "", "ERROR line 2" });
+        text.Should().Contain("ERROR line 1");
+        text.Should().Contain("ERROR line 2");
+    }
+
+    [Fact]
+    public void ResolvePasteEvidenceName_uses_requested_or_increments_paste_n()
+    {
+        GrillInteractive.ResolvePasteEvidenceName("app.log", 0).Should().Be("app.log");
+        GrillInteractive.ResolvePasteEvidenceName(null, 2).Should().Be("paste-3.txt");
+    }
+
+    [Fact]
+    public void ValidatePasteSize_rejects_over_max_bytes()
+    {
+        var small = new string('a', 100);
+        GrillInteractive.ValidatePasteSize(small, 200).Should().BeTrue();
+        GrillInteractive.ValidatePasteSize(new string('x', 300), 200).Should().BeFalse();
+    }
+
+    [Fact]
+    public void BuildPasteConsultMessage_truncates_preview_and_includes_evidence_pointer()
+    {
+        var full = new string('L', 10_000);
+        var msg = GrillInteractive.BuildPasteConsultMessage("paste-1.txt", full, lineCount: 50, maxPreviewChars: 100);
+
+        msg.Should().Contain("preview truncated");
+        msg.Should().Contain("full content in evidence as paste-1.txt");
+        msg.Length.Should().BeLessThan(full.Length);
+    }
+
+    [Fact]
+    public void TryAddPastedEvidence_adds_rejects_duplicate_and_too_large()
+    {
+        var state = new GrillSessionState(@"C:\incident");
+        var ok = state.TryAddPastedEvidence("app.log", "ERROR timeout");
+        ok.Loaded.Should().BeTrue();
+        ok.FileName.Should().Be("app.log");
+        state.CurrentEvidenceCount.Should().Be(1);
+
+        var dup = state.TryAddPastedEvidence("app.log", "other");
+        dup.Loaded.Should().BeFalse();
+        dup.SkipReason.Should().Be("already-loaded");
+
+        var big = state.TryAddPastedEvidence("big.log", new string('x', 200), maxBytes: 100);
+        big.Loaded.Should().BeFalse();
+        big.SkipReason.Should().Be("too-large");
+    }
+
     // Session simulation (multi-turn drive of state + seams, no console/TTY, crosses Consult + Diagnose paths)
     [Fact]
     public void Grill_session_simulation_accumulates_context_and_interleaves_diagnose()
@@ -341,7 +667,7 @@ public class DomainModelTests
         state.AddEvidence(new RawSource("app.log", "service error after change deploy-123 to api-service", null, "log"));
 
         // NL turn (Consult seam + state)
-        var nlReply = client.ConsultAsync("the api is failing after the deploy", cwd: @"C:\sim", compactContext: state.GetCompactContextForChat().ToString()).Result;
+        var nlReply = client.ConsultAsync("the api is failing after the deploy", cwd: @"C:\sim", compactContext: state.GetCompactContextForChat().FormatForAdvisor()).Result;
         state.AppendTurn("the api is failing after the deploy", nlReply);
         state.Turns.Should().HaveCount(1);
 

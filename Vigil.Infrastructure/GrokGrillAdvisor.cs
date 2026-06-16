@@ -43,7 +43,7 @@ public class GrokGrillAdvisor : IGrillAdvisor
 
             var sysPrompt = "You are an expert, precise systems debugging partner in an interactive terminal 'grill-me' session. " +
                             "The engineer is investigating a live incident in a specific working directory. " +
-                            "You have access to a compact session context (loaded evidence summaries, token usage so far, previous turns, last formal diagnosis id if any). " +
+                            "You have access to a compact session context (bounded evidence excerpts per loaded file, token usage so far, previous turns, last formal diagnosis id if any). " +
                             "Reference specific details from the context when relevant. Be concise but helpful. " +
                             "Ask clarifying questions if the evidence is ambiguous. " +
                             "If the user appears to want a formal, cited, validated root-cause analysis, suggest they use the '/diagnose' command (or describe a clear symptom) so the governed pipeline with citations and provenance can be used. " +

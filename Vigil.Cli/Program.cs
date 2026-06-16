@@ -150,7 +150,7 @@ public static class Program
 
         AnsiConsole.Write(new Rule("[bold green]Vigil — Grill-me session[/]"));
         AnsiConsole.MarkupLine($"[grey]In[/] [cyan]{launchDir}[/]");
-        AnsiConsole.MarkupLine("[grey]Type naturally. /help, /load <path>, /diagnose, /status, exit.[/]");
+        AnsiConsole.MarkupLine("[grey]Type naturally. /help, /load, /paste, /diagnose, /status, exit.[/]");
         AnsiConsole.WriteLine();
 
         while (true)
@@ -166,34 +166,33 @@ public static class Program
                 if (c is "exit" or "quit" or "q") { AnsiConsole.MarkupLine("[grey]Session ended.[/]"); break; }
                 if (c is "help" or "?" )
                 {
-                    AnsiConsole.MarkupLine("[yellow]/load <rel-path>  /diagnose  /status  exit[/]");
+                    AnsiConsole.MarkupLine("[yellow]/load <rel-path>  /paste [name]  (paste text, then END)[/]");
+                    AnsiConsole.MarkupLine("[yellow]/diagnose [--symptom \"...\"] [--offline] [--dry-run]  diagnose me — <symptom>[/]");
+                    AnsiConsole.MarkupLine("[yellow]/status  exit[/]");
                     continue;
                 }
                 if (c == "load" && intent.Arguments.Count > 0)
                 {
-                    var p = intent.Arguments[0];
-                    var full = System.IO.Path.IsPathRooted(p) ? p : System.IO.Path.Combine(launchDir, p);
-                    if (System.IO.File.Exists(full))
-                    {
-                        var txt = System.IO.File.ReadAllText(full);
-                        state.AddEvidence(new RawSource(System.IO.Path.GetFileName(full), txt, null, "loaded"));
+                    var outcome = state.TryLoadEvidenceFromPath(intent.Arguments[0], hint: "loaded");
+                    if (outcome.Loaded)
                         AnsiConsole.MarkupLine($"[green]Loaded[/] — evidence now {state.CurrentEvidenceCount}");
-                    }
-                    else AnsiConsole.MarkupLine("[red]not found[/]");
+                    else if (outcome.SkipReason == "too-large")
+                        AnsiConsole.MarkupLine($"[red]too large[/] — exceeds {Vigil.Application.GrillSessionState.MaxAutoLoadBytes} bytes; trim or load a smaller excerpt");
+                    else
+                        AnsiConsole.MarkupLine("[red]not found[/]");
+                    continue;
+                }
+                if (c == "paste")
+                {
+                    var requestedName = intent.Arguments.Count > 0 ? intent.Arguments[0] : null;
+                    HandlePasteInSession(client, state, launchDir, requestedName);
                     continue;
                 }
                 if (c == "diagnose")
                 {
-                    var srcs = state.GetCurrentEvidenceSnapshot();
-                    if (srcs.Count == 0) srcs = new List<RawSource> { new RawSource("sample", "error in session context", null, "sample") };
-                    var symptom = intent.SuggestedSymptom ?? "issue from grill session";
-                    var d = client.DiagnoseAsync(new DiagnoseRequest(srcs, new ScopeHints(Symptom: symptom))).GetAwaiter().GetResult();
-                    state.SetLastDiagnosis(d);
-                    // Record tokens from the governed path for the running list in session state
-                    if (d.Provenance.Usage != null)
-                        state.RecordTokens(d.Provenance.Usage.InputTokens, d.Provenance.Usage.OutputTokens);
-                    // Full render of the governed cited Diagnosis inside the session (tree + citations + provenance)
-                    RenderFullDiagnosisInSession(d, false);
+                    var argTail = Vigil.Application.GrillInteractive.ExtractSlashDiagnoseArgTail(input);
+                    var parsed = Vigil.Application.GrillInteractive.ParseDiagnoseFlagsWithRemainder(argTail);
+                    HandleDiagnoseInSession(client, state, input, parsed.Args, parsed.Remainder);
                     continue;
                 }
                 if (c == "status")
@@ -204,12 +203,124 @@ public static class Program
                 continue;
             }
 
-            // Natural language — calls through the Consult seam (context from SessionState passed in)
-            var reply = client.ConsultAsync(input, cwd: launchDir, lastDiagnosisId: state.LastDiagnosis?.Id, compactContext: state.GetCompactContextForChat().ToString()).GetAwaiter().GetResult();
+            // NL diagnose-intent routes to the same governed handler as /diagnose
+            var diagnoseIntent = Vigil.Application.GrillInteractive.TryParseDiagnoseIntent(input);
+            if (diagnoseIntent != null)
+            {
+                HandleDiagnoseInSession(client, state, input, diagnoseIntent.Args, diagnoseIntent.UtteranceRemainder);
+                continue;
+            }
+
+            // Natural language — intent-gated auto-load, then Consult with bounded excerpts
+            var loadResult = Vigil.Application.GrillInteractive.TryExtractAndLoadPaths(input, state);
+            if (loadResult.LoadedFileNames.Count > 0)
+                AnsiConsole.MarkupLine($"[green]Auto-loaded[/] {string.Join(", ", loadResult.LoadedFileNames)} — evidence now {state.CurrentEvidenceCount}");
+            if (loadResult.NotFoundPaths.Count > 0)
+                AnsiConsole.MarkupLine($"[yellow]Not found[/] {string.Join(", ", loadResult.NotFoundPaths)}");
+            if (loadResult.SkippedTooLarge.Count > 0)
+                AnsiConsole.MarkupLine($"[yellow]Too large[/] {string.Join(", ", loadResult.SkippedTooLarge)} — use /load after trimming or split the file");
+
+            var reply = client.ConsultAsync(input, cwd: launchDir, lastDiagnosisId: state.LastDiagnosis?.Id, compactContext: state.GetCompactContextForChat().FormatForAdvisor()).GetAwaiter().GetResult();
             state.AppendTurn(input, reply);
             AnsiConsole.MarkupLine(reply);
         }
         return 0;
+    }
+
+    // == Multi-line /paste (clipboard logs → evidence + bounded consult preview) == //
+    static void HandlePasteInSession(
+        IVigilClient client,
+        Vigil.Application.GrillSessionState state,
+        string launchDir,
+        string? requestedName)
+    {
+        var text = ReadMultilinePasteFromConsole();
+        if (text == null)
+            return;
+
+        var lineCount = text.Split('\n').Length;
+        var resolvedName = Vigil.Application.GrillInteractive.ResolvePasteEvidenceName(requestedName, state.CurrentEvidenceCount);
+        var outcome = state.TryAddPastedEvidence(requestedName, text);
+
+        if (outcome.Loaded)
+        {
+            var bytes = System.Text.Encoding.UTF8.GetByteCount(text);
+            AnsiConsole.MarkupLine($"[green]Added[/] {outcome.FileName} as evidence ({bytes} bytes) — evidence now {state.CurrentEvidenceCount}");
+        }
+        else if (outcome.SkipReason == "already-loaded")
+            AnsiConsole.MarkupLine($"[yellow]Already loaded[/] — {outcome.FileName}; sending preview to advisor anyway");
+        else if (outcome.SkipReason == "too-large")
+            AnsiConsole.MarkupLine($"[yellow]Too large for evidence[/] — exceeds {Vigil.Application.GrillSessionState.MaxAutoLoadBytes} bytes; sending preview to advisor only");
+
+        var evidenceName = outcome.FileName ?? resolvedName;
+        var consultMessage = Vigil.Application.GrillInteractive.BuildPasteConsultMessage(evidenceName, text, lineCount);
+        var reply = client.ConsultAsync(
+            consultMessage,
+            cwd: launchDir,
+            lastDiagnosisId: state.LastDiagnosis?.Id,
+            compactContext: state.GetCompactContextForChat().FormatForAdvisor()).GetAwaiter().GetResult();
+
+        state.AppendTurn($"[paste {evidenceName}]", reply);
+        AnsiConsole.MarkupLine(reply);
+    }
+
+    static string? ReadMultilinePasteFromConsole()
+    {
+        AnsiConsole.MarkupLine("[grey]Paste mode: paste your text, then type END on its own line.[/]");
+        AnsiConsole.MarkupLine("[grey](Avoid a lone END line inside pasted logs — it will close paste mode.)[/]");
+
+        var lines = new List<string>();
+        while (true)
+        {
+            var line = Console.ReadLine();
+            if (line == null)
+                break;
+
+            if (Vigil.Application.GrillInteractive.IsPasteEndMarker(line))
+                break;
+
+            lines.Add(line);
+        }
+
+        var text = Vigil.Application.GrillInteractive.FinalizePastedLines(lines);
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            AnsiConsole.MarkupLine("[yellow]Empty paste — nothing added.[/]");
+            return null;
+        }
+
+        return text;
+    }
+
+    // == In-session governed diagnose (slash + NL intent share this path) == //
+    static void HandleDiagnoseInSession(
+        IVigilClient client,
+        Vigil.Application.GrillSessionState state,
+        string rawInput,
+        Vigil.Application.DiagnoseCommandArgs args,
+        string? utteranceRemainder)
+    {
+        var loadResult = Vigil.Application.GrillInteractive.TryExtractAndLoadPaths(rawInput, state);
+        if (loadResult.LoadedFileNames.Count > 0)
+            AnsiConsole.MarkupLine($"[green]Auto-loaded[/] {string.Join(", ", loadResult.LoadedFileNames)} — evidence now {state.CurrentEvidenceCount}");
+        if (loadResult.NotFoundPaths.Count > 0)
+            AnsiConsole.MarkupLine($"[yellow]Not found[/] {string.Join(", ", loadResult.NotFoundPaths)}");
+        if (loadResult.SkippedTooLarge.Count > 0)
+            AnsiConsole.MarkupLine($"[yellow]Too large[/] {string.Join(", ", loadResult.SkippedTooLarge)} — use /load after trimming or split the file");
+
+        if (state.CurrentEvidenceCount == 0)
+            AnsiConsole.MarkupLine("[yellow]No evidence loaded — diagnosis will have weak/no citations. Use /load or mention files.[/]");
+
+        var resolved = Vigil.Application.GrillInteractive.ResolveSymptom(args, utteranceRemainder, state);
+        if (resolved.UsedGenericSymptomFallback)
+            AnsiConsole.MarkupLine("[yellow]No symptom found — using generic fallback. Add --symptom or describe the issue.[/]");
+
+        var request = Vigil.Application.GrillInteractive.BuildDiagnoseRequest(state, args, resolved.Symptom);
+        var d = client.DiagnoseAsync(request).GetAwaiter().GetResult();
+        state.SetLastDiagnosis(d);
+        if (d.Provenance.Usage != null)
+            state.RecordTokens(d.Provenance.Usage.InputTokens, d.Provenance.Usage.OutputTokens);
+        RenderFullDiagnosisInSession(d, args.DryRun);
     }
 
     // == Full render of governed Diagnosis inside TUI session == //
