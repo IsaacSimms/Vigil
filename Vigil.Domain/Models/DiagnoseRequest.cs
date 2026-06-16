@@ -7,11 +7,10 @@ namespace Vigil.Domain.Models;
 
 /// <summary>
 /// The input DTO from presentation (CLI) into the core.
-/// Contains the raw sources plus optional scoping hints. 
-/// Offline/DryRun flags control whether we hit the model seam or the redactor.
+/// Contains the raw sources plus optional scoping hints.
+/// Offline flag forces the heuristic analyzer (no model call, zero cost).
 /// </summary>
 public record DiagnoseRequest(
     IReadOnlyList<RawSource> Sources,
     ScopeHints Hints,
-    bool Offline = false,
-    bool DryRun = false);
+    bool Offline = false);

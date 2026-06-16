@@ -1,6 +1,7 @@
 // == GrillInteractive pure helpers (agentic TUI foundation + running context/token list per approved plan + Hole 4) == //
 // Non-UI, reusable, fully testable. Lives in Application so future GUIs or embedded sessions can drive the same Grill-me logic.
 // Keeps the heart: no SDK, no presentation chrome, depends only on Domain types. TDD-led.
+// (GrillSessionState + its context records extracted to its own file for improved Locality (UL) and scan-ability per user-directed option B split.)
 
 using System;
 using System.Collections.Generic;
@@ -63,11 +64,10 @@ namespace Vigil.Application
         {
             string? symptom = null;
             var offline = false;
-            var dryRun = false;
             var remainderParts = new List<string>();
 
             if (string.IsNullOrWhiteSpace(text))
-                return new DiagnoseFlagParseResult(new DiagnoseCommandArgs(symptom, offline, dryRun), null);
+                return new DiagnoseFlagParseResult(new DiagnoseCommandArgs(symptom, offline), null);
 
             var i = 0;
             var s = text.Trim();
@@ -92,12 +92,6 @@ namespace Vigil.Application
                     if (flag == "offline")
                     {
                         offline = true;
-                        continue;
-                    }
-
-                    if (flag is "dry-run" or "dryrun")
-                    {
-                        dryRun = true;
                         continue;
                     }
 
@@ -131,7 +125,7 @@ namespace Vigil.Application
             if (string.IsNullOrWhiteSpace(remainder))
                 remainder = null;
 
-            return new DiagnoseFlagParseResult(new DiagnoseCommandArgs(symptom, offline, dryRun), remainder);
+            return new DiagnoseFlagParseResult(new DiagnoseCommandArgs(symptom, offline), remainder);
         }
 
         public static string? ExtractSlashDiagnoseArgTail(string input)
@@ -169,7 +163,36 @@ namespace Vigil.Application
                 return new DiagnoseIntentResult(true, parsed.Remainder, parsed.Args);
             }
 
+            // == Broad NL signals so user can say "analyze the files in this folder... Use /diagnose" (or similar) and get governed path without exact prefix == //
+            if (ContainsFormalDiagnosisSignal(trimmed))
+            {
+                // Use the full utterance as remainder source; ParseDiagnoseFlags will pull --flags if present
+                var parsed = ParseDiagnoseFlagsWithRemainder(trimmed);
+                return new DiagnoseIntentResult(true, parsed.Remainder ?? trimmed, parsed.Args);
+            }
+
             return null;
+        }
+
+        // == Pure, deterministic detector for NL that should escalate to the formal Diagnose pipeline (not just chat Consult) == //
+        private static bool ContainsFormalDiagnosisSignal(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return false;
+
+            var t = text.ToLowerInvariant();
+
+            // Explicit skill invocation anywhere in the utterance
+            if (t.Contains("/diagnose") || t.Contains("use diagnose") || t.Contains("run diagnose") || t.Contains("trigger diagnose"))
+                return true;
+
+            // Strong analysis request that names the outcome the user wants (issue + fix/root/broke) — "analyze X and tell the issue and potential fix"
+            var hasAnalysisVerb = t.Contains("analyze") || t.Contains("analyz") || t.Contains("root cause") || t.Contains("find what broke") || t.Contains("figure out what");
+            var hasDesiredOutcome = t.Contains("issue") || t.Contains("fix") || t.Contains("broke") || t.Contains("problem") || t.Contains("root cause") || t.Contains("what the issue");
+            if (hasAnalysisVerb && hasDesiredOutcome)
+                return true;
+
+            return false;
         }
 
         public static ResolvedDiagnoseInput ResolveSymptom(
@@ -199,7 +222,7 @@ namespace Vigil.Application
                 throw new ArgumentNullException(nameof(state));
 
             var sources = state.GetCurrentEvidenceSnapshot();
-            return new DiagnoseRequest(sources, new ScopeHints(Symptom: symptom), args.Offline, args.DryRun);
+            return new DiagnoseRequest(sources, new ScopeHints(Symptom: symptom), args.Offline);
         }
 
         private static (string Value, int NextIndex) ReadFlagValue(string s, int start)
@@ -346,21 +369,33 @@ namespace Vigil.Application
         }
 
         // == NL auto-load intent gate (only load when user signals file intent or uses explicit paths) == //
+        // Now also triggers for "analyze ... files in this folder" (dir intent + verb) even without foo.log tokens.
         public static bool ShouldAttemptAutoLoad(string input)
         {
             if (string.IsNullOrWhiteSpace(input))
                 return false;
 
-            if (!ExtractFilePathCandidates(input).Any())
+            var hasFileCandidates = ExtractFilePathCandidates(input).Any();
+            var hasDirSignal = MentionsCurrentFolderOrDirectory(input);
+
+            if (!hasFileCandidates && !hasDirSignal)
                 return false;
 
             if (LoadIntentVerbRegex.IsMatch(input))
                 return true;
 
-            return ExplicitPathSyntaxRegex.IsMatch(input);
+            if (ExplicitPathSyntaxRegex.IsMatch(input))
+                return true;
+
+            // Dir signal + analysis language is sufficient (e.g. the verb regex already covers "analyze")
+            if (hasDirSignal && LoadIntentVerbRegex.IsMatch(input))
+                return true;
+
+            return false;
         }
 
         // == NL auto-load (resolve against launch dir, add RawSource evidence, report outcomes) == //
+        // Enhanced to also handle "in this folder / these files in the directory" by delegating to state dir loader.
         public static PathLoadResult TryExtractAndLoadPaths(string input, GrillSessionState state)
         {
             if (state == null)
@@ -400,6 +435,18 @@ namespace Vigil.Application
                     case "too-large":
                         tooLarge.Add(candidate);
                         break;
+                }
+            }
+
+            // == Directory expansion for folder phrases (e.g. user's "each of these files in this folder") == //
+            // Conservative shallow scan of launch dir using sensible-evidence filter; names unioned into loaded for reporting.
+            if (MentionsCurrentFolderOrDirectory(input))
+            {
+                var fromDir = state.TryLoadSensibleFilesFromLaunchDirectory(maxFiles: 25, perFileMaxBytes: GrillSessionState.MaxAutoLoadBytes);
+                foreach (var name in fromDir)
+                {
+                    if (!loaded.Any(l => string.Equals(l, name, StringComparison.OrdinalIgnoreCase)))
+                        loaded.Add(name);
                 }
             }
 
@@ -466,6 +513,42 @@ namespace Vigil.Application
         private static readonly Regex ExplicitPathSyntaxRegex = new(
             @"(?:[A-Za-z]:\\|\.{1,2}[\\/])",
             RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+        // == Folder/directory intent for "analyze each of these files in this folder" NL case (no concrete foo.log tokens needed) == //
+        private static readonly Regex FolderOrDirectoryIntentRegex = new(
+            @"\b(?:this\s+(?:folder|directory|dir)|the\s+files?\s+(?:in\s+(?:this|the|current)\s+)?(?:folder|directory|dir|here)|these\s+files?|all\s+files?\s+(?:in|here|the\s+folder)|current\s+dir(?:ectory)?|folder\s+(?:contents?|files?))\b",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        // == Public helper for tests and dir-load gating (conservative text-ish evidence files only; skips vcs/build/binary) == //
+        public static bool IsSensibleEvidenceFile(string pathOrName)
+        {
+            if (string.IsNullOrWhiteSpace(pathOrName))
+                return false;
+
+            var name = Path.GetFileName(pathOrName);
+            if (name.StartsWith(".", StringComparison.Ordinal))
+                return false;
+
+            var lowerFull = pathOrName.ToLowerInvariant().Replace('/', '\\');
+            if (lowerFull.Contains("\\.git\\") || lowerFull.Contains("\\bin\\") || lowerFull.Contains("\\obj\\") ||
+                lowerFull.Contains("node_modules") || lowerFull.Contains("\\.vs\\") || lowerFull.Contains("\\debug\\") ||
+                lowerFull.Contains("\\release\\"))
+                return false;
+
+            var ext = Path.GetExtension(name).TrimStart('.').ToLowerInvariant();
+            if (string.IsNullOrEmpty(ext))
+                return false;
+
+            return ext is "log" or "txt" or "json" or "csv" or "yaml" or "yml" or "syslog" or "config" or "conf" or "ini" or "md" or "cs" or "ps1" or "sh" or "xml" or "properties" or "toml";
+        }
+
+        // == Internal for load decision (public for direct test of the signal) == //
+        public static bool MentionsCurrentFolderOrDirectory(string input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return false;
+            return FolderOrDirectoryIntentRegex.IsMatch(input);
+        }
     }
 
     public sealed record PathLoadResult(
@@ -485,8 +568,6 @@ namespace Vigil.Application
 
     public sealed record EvidenceLoadOutcome(bool Loaded, string? FileName, string? SkipReason);
 
-    public sealed record EvidenceExcerpt(string FileName, string Text, bool Truncated);
-
     public sealed record IntentResult(
         bool IsExplicitCommand,
         string? CommandName,
@@ -494,181 +575,11 @@ namespace Vigil.Application
         string? SuggestedSymptom,
         string? FreeText);
 
-    public sealed record DiagnoseCommandArgs(string? Symptom, bool Offline, bool DryRun);
+    public sealed record DiagnoseCommandArgs(string? Symptom, bool Offline);
 
     public sealed record DiagnoseFlagParseResult(DiagnoseCommandArgs Args, string? Remainder);
 
     public sealed record DiagnoseIntentResult(bool IsDiagnoseIntent, string? UtteranceRemainder, DiagnoseCommandArgs Args);
 
     public sealed record ResolvedDiagnoseInput(string Symptom, bool UsedGenericSymptomFallback);
-
-    // == Supporting records for SessionState (visible in the chat) == //
-    public sealed record Turn(string UserMessage, string Reply, DateTimeOffset Timestamp);
-    public sealed record CompactChatContext(
-        string LaunchDirectory,
-        int EvidenceCount,
-        string? LastDiagnosisSummary,
-        string? LastTurnSummary,
-        int ApproximateTokensInContext,
-        IReadOnlyList<EvidenceExcerpt> EvidenceExcerpts)
-    {
-        // == Format compact context for IGrillAdvisor (includes bounded evidence excerpts) == //
-        public string FormatForAdvisor()
-        {
-            var sb = new StringBuilder();
-            sb.Append($"cwd={LaunchDirectory}; evidence={EvidenceCount}; tokens~={ApproximateTokensInContext}");
-
-            if (!string.IsNullOrWhiteSpace(LastDiagnosisSummary))
-                sb.Append($"; lastDiagnosis={LastDiagnosisSummary}");
-
-            if (!string.IsNullOrWhiteSpace(LastTurnSummary))
-                sb.Append($"; lastTurn={LastTurnSummary}");
-
-            foreach (var excerpt in EvidenceExcerpts)
-            {
-                var prefix = excerpt.Truncated ? "[truncated] " : "";
-                sb.Append($"; excerpt[{excerpt.FileName}]={prefix}{excerpt.Text}");
-            }
-
-            return sb.ToString();
-        }
-    }
-
-    // == SessionState: the heart of the persistent grill-me conversation (evidence accumulation + running token + context list) == //
-    public sealed class GrillSessionState
-    {
-        public const long MaxAutoLoadBytes = 1_048_576;        // 1 MB cap for NL auto-load
-        public const int MaxExcerptCharsPerFile = 500;
-        public const int MaxTotalExcerptChars = 3_000;
-
-        private readonly List<RawSource> _evidence = new();
-        private readonly List<Turn> _turns = new();
-        private int _inputTokens;
-        private int _outputTokens;
-
-        public string LaunchDirectory { get; }
-        public int CurrentEvidenceCount => _evidence.Count;
-        public IReadOnlyList<Turn> Turns => _turns;
-        public Diagnosis? LastDiagnosis { get; private set; }
-        public int TotalTokensUsed => _inputTokens + _outputTokens;
-
-        public GrillSessionState(string launchDirectory)
-        {
-            LaunchDirectory = launchDirectory ?? Environment.CurrentDirectory;
-        }
-
-        public void AddEvidence(RawSource source)
-        {
-            if (source != null)
-                _evidence.Add(source);
-        }
-
-        // == Shared evidence load (used by /load and NL auto-load) == //
-        public EvidenceLoadOutcome TryLoadEvidenceFromPath(string candidate, string hint, long maxBytes = long.MaxValue)
-        {
-            if (string.IsNullOrWhiteSpace(candidate))
-                return new EvidenceLoadOutcome(false, null, "not-found");
-
-            var resolved = GrillInteractive.ResolvePath(candidate, LaunchDirectory);
-            var fileName = Path.GetFileName(resolved);
-
-            if (_evidence.Any(e => string.Equals(e.Name, fileName, StringComparison.OrdinalIgnoreCase)))
-                return new EvidenceLoadOutcome(false, fileName, "already-loaded");
-
-            if (!File.Exists(resolved))
-                return new EvidenceLoadOutcome(false, candidate, "not-found");
-
-            var size = new FileInfo(resolved).Length;
-            if (size > maxBytes)
-                return new EvidenceLoadOutcome(false, fileName, "too-large");
-
-            var text = File.ReadAllText(resolved);
-            AddEvidence(new RawSource(fileName, text, null, hint));
-            return new EvidenceLoadOutcome(true, fileName, null);
-        }
-
-        // == Pasted clipboard/log content (used by /paste in TUI) == //
-        public EvidenceLoadOutcome TryAddPastedEvidence(string? requestedName, string text, long maxBytes = MaxAutoLoadBytes)
-        {
-            if (string.IsNullOrWhiteSpace(text))
-                return new EvidenceLoadOutcome(false, null, "empty");
-
-            var fileName = GrillInteractive.ResolvePasteEvidenceName(requestedName, _evidence.Count);
-
-            if (_evidence.Any(e => string.Equals(e.Name, fileName, StringComparison.OrdinalIgnoreCase)))
-                return new EvidenceLoadOutcome(false, fileName, "already-loaded");
-
-            if (Encoding.UTF8.GetByteCount(text) > maxBytes)
-                return new EvidenceLoadOutcome(false, fileName, "too-large");
-
-            AddEvidence(new RawSource(fileName, text, null, "pasted"));
-            return new EvidenceLoadOutcome(true, fileName, null);
-        }
-
-        public void AppendTurn(string userMessage, string reply)
-        {
-            _turns.Add(new Turn(userMessage ?? "", reply ?? "", DateTimeOffset.UtcNow));
-        }
-
-        public void SetLastDiagnosis(Diagnosis? diagnosis)
-        {
-            LastDiagnosis = diagnosis;
-        }
-
-        public void RecordTokens(int input, int output)
-        {
-            if (input > 0) _inputTokens += input;
-            if (output > 0) _outputTokens += output;
-        }
-
-        public CompactChatContext GetCompactContextForChat()
-        {
-            var lastTurn = _turns.LastOrDefault();
-            var lastDiagSummary = LastDiagnosis?.Summary;
-
-            var excerpts = BuildEvidenceExcerpts();
-            var excerptChars = excerpts.Sum(e => e.Text.Length);
-
-            // Lightweight token estimate including bounded excerpts for the advisor prompt.
-            int approx = Math.Min(8000, (_evidence.Count * 300) + (_turns.Count * 150) + (lastDiagSummary?.Length ?? 0) + excerptChars);
-            if (TotalTokensUsed > 0) approx = Math.Max(approx, TotalTokensUsed / 2);
-
-            return new CompactChatContext(
-                LaunchDirectory,
-                _evidence.Count,
-                lastDiagSummary,
-                lastTurn?.Reply,
-                approx,
-                excerpts);
-        }
-
-        private List<EvidenceExcerpt> BuildEvidenceExcerpts()
-        {
-            var excerpts = new List<EvidenceExcerpt>();
-            var totalChars = 0;
-
-            foreach (var source in _evidence)
-            {
-                if (totalChars >= MaxTotalExcerptChars)
-                    break;
-
-                var text = source.Text ?? "";
-                var name = source.Name ?? "unknown";
-                var remaining = MaxTotalExcerptChars - totalChars;
-                var perFileLimit = Math.Min(MaxExcerptCharsPerFile, remaining);
-                if (perFileLimit <= 0)
-                    break;
-
-                var truncated = text.Length > perFileLimit;
-                var excerptText = truncated ? text[..perFileLimit] : text;
-                excerpts.Add(new EvidenceExcerpt(name, excerptText, truncated));
-                totalChars += excerptText.Length;
-            }
-
-            return excerpts;
-        }
-
-        // For TUI display of the "running list"
-        public IReadOnlyList<RawSource> GetCurrentEvidenceSnapshot() => _evidence.ToList();
-    }
 }

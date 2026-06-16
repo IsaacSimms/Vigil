@@ -3,10 +3,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Vigil.Domain;
 using Vigil.Domain.Entities;
-using Vigil.Domain.Enums;
 using Vigil.Domain.Models;
-using Vigil.Domain.ValueObjects;
 
 namespace Vigil.Application.Coordinators;
 
@@ -24,7 +23,7 @@ public class EvidenceAssembler
         var list = artifacts?.ToList() ?? new List<EvidenceArtifact>();
         if (list.Count == 0)
         {
-            return new EvidenceBundle(Array.Empty<EvidenceArtifact>(), new ExclusionReport(Array.Empty<string>()), hints?.Symptom);
+            return new EvidenceBundle(Array.Empty<EvidenceArtifact>(), new ExclusionReport(Array.Empty<string>()), hints);
         }
 
         // Rank (simple for skeleton; real uses temporal/severity/resource per §5)
@@ -39,31 +38,12 @@ public class EvidenceAssembler
             ? new ExclusionReport(list.Skip(capped.Count).Select(a => $"Excluded artifact {a.Id} by cap/rank").ToList())
             : new ExclusionReport(Array.Empty<string>());
 
-        return new EvidenceBundle(capped, exclusions, hints?.Symptom);
+        return new EvidenceBundle(capped, exclusions, hints);
     }
 
     private double RankByRelevance(EvidenceArtifact artifact, ScopeHints hints)
     {
-        // Skeleton scoring: favor timestamp proximity + resource match + severity signals.
-        // Full logic in later refinement per design.
-        double score = 0;
-
-        if (hints?.From != null && artifact.Timestamp.HasValue)
-        {
-            var delta = Math.Abs((artifact.Timestamp.Value - hints.From.Value).TotalSeconds);
-            score += 1000 / (1 + delta); // closer = higher
-        }
-
-        if (hints?.Resource != null && artifact.Resource != null && hints.Resource.Equals(artifact.Resource))
-        {
-            score += 500;
-        }
-
-        // Bias toward certain kinds for demo
-        if (artifact.Kind == ArtifactKind.ChangeRecord)
-            score += 300;
-
-        return score;
+        return ArtifactRelevanceScorer.Score(artifact, hints?.From, hints?.Resource);
     }
 
     private IReadOnlyList<EvidenceArtifact> ApplyTokenCap(IEnumerable<EvidenceArtifact> ranked)

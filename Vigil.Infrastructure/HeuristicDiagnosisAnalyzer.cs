@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Vigil.Domain;
 using Vigil.Domain.Abstractions;
 using Vigil.Domain.Entities;
 using Vigil.Domain.Enums;
@@ -34,8 +35,12 @@ public class HeuristicDiagnosisAnalyzer : IDiagnosisAnalyzer
             .OrderBy(a => a.Timestamp)
             .FirstOrDefault()?.Timestamp ?? DateTimeOffset.UtcNow.AddMinutes(-5);
 
+        // Use engineer-supplied window start when available; fall back to first-error approximation
+        var referenceTime  = bundle.Hints?.From ?? firstError;
+        var targetResource = bundle.Hints?.Resource;
+
         var scored = bundle.Artifacts
-            .Select(a => (Artifact: a, Score: ScoreByProximity(a, firstError)))
+            .Select(a => (Artifact: a, Score: ArtifactRelevanceScorer.Score(a, referenceTime, targetResource)))
             .OrderByDescending(x => x.Score)
             .Take(5)
             .ToList();
@@ -60,16 +65,4 @@ public class HeuristicDiagnosisAnalyzer : IDiagnosisAnalyzer
         return new AnalyzerResult(true, raw, AnalyzerTier.Heuristic, null, usage);
     }
 
-    private double ScoreByProximity(EvidenceArtifact artifact, DateTimeOffset firstError)
-    {
-        double score = 0;
-        if (artifact.Timestamp.HasValue)
-        {
-            var delta = Math.Abs((artifact.Timestamp.Value - firstError).TotalSeconds);
-            score += 1000 / (1 + delta);
-        }
-        if (artifact.Kind == ArtifactKind.ChangeRecord) score += 500;
-        if (artifact.Resource != null) score += 200; // resource match bias
-        return score;
-    }
 }

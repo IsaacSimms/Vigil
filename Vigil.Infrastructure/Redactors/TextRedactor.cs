@@ -51,6 +51,6 @@ public class TextRedactor : IRedactor
             }
         }
 
-        return new EvidenceBundle(redactedArtifacts, bundle.Exclusions, bundle.Symptom);
+        return new EvidenceBundle(redactedArtifacts, bundle.Exclusions, bundle.Hints);
     }
 }

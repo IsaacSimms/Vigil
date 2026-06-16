@@ -35,9 +35,6 @@ public sealed class DiagnoseCommand : AsyncCommand<DiagnoseCommand.Settings>
         [CommandOption("--offline")]
         public bool Offline { get; init; }
 
-        [CommandOption("--dry-run")]
-        public bool DryRun { get; init; }
-
         [CommandOption("--json")]
         public bool Json { get; init; }
     }
@@ -68,7 +65,7 @@ public sealed class DiagnoseCommand : AsyncCommand<DiagnoseCommand.Settings>
         }
 
         var hints = new ScopeHints(Symptom: settings.Symptom);
-        var request = new DiagnoseRequest(sources, hints, settings.Offline, settings.DryRun);
+        var request = new DiagnoseRequest(sources, hints, settings.Offline);
 
         var diagnosis = await _client.DiagnoseAsync(request);
 
@@ -79,16 +76,15 @@ public sealed class DiagnoseCommand : AsyncCommand<DiagnoseCommand.Settings>
         }
         else
         {
-            RenderHuman(diagnosis, settings.DryRun);
+            RenderHuman(diagnosis);
         }
 
         return 0;
     }
 
-    private void RenderHuman(Diagnosis diagnosis, bool dryRun)
+    private void RenderHuman(Diagnosis diagnosis)
     {
-        var rule = new Rule(dryRun ? "[yellow]DRY-RUN PREVIEW[/]" : "[green]Diagnosis[/]");
-        AnsiConsole.Write(rule);
+        AnsiConsole.Write(new Rule("[green]Diagnosis[/]"));
 
         var tree = new Tree($"[bold]{diagnosis.Summary}[/]");
 
@@ -101,25 +97,15 @@ public sealed class DiagnoseCommand : AsyncCommand<DiagnoseCommand.Settings>
 
             var cites = causeNode.AddNode("Citations");
             foreach (var cit in cause.Citations)
-            {
                 cites.AddNode($"Artifact {cit.EvidenceArtifactId} - {cit.Snippet ?? "(no snippet)"}");
-            }
         }
 
         AnsiConsole.Write(tree);
 
-        // Provenance
         var prov = diagnosis.Provenance;
         AnsiConsole.MarkupLine($"[grey]Provenance: {prov.AnalyzedBy} (tier) {prov.Reason?.ToString() ?? ""}[/]");
 
         if (prov.Usage != null)
-        {
             AnsiConsole.MarkupLine($"[grey]Tokens: in={prov.Usage.InputTokens} out={prov.Usage.OutputTokens}[/]");
-        }
-
-        if (dryRun)
-        {
-            AnsiConsole.MarkupLine("[yellow]This was a dry-run. No model call was made.[/]");
-        }
     }
 }

@@ -85,6 +85,7 @@ public interface IVigilClient
 {
     Task<Diagnosis> DiagnoseAsync(DiagnoseRequest request);
     Task<Diagnosis[]> QueryHistoryAsync(ISpecification<Diagnosis> spec);
+    Task<string> ConsultAsync(string message, string? cwd = null, Guid? lastDiagnosisId = null, string? compactContext = null);
 }
 ```
 
@@ -93,6 +94,20 @@ public interface IVigilClient
 - Swapping is a composition-root decision only. Presentation never knows or cares which transport is active.
 - **The load-bearing rule (repeated for emphasis):** Presentation carries **zero business logic**. Command → client.DiagnoseAsync(...) → render (tree or --json). This is what keeps future UIs additive rather than rewrites.
 - See: SystemsDesign §3 (Transport), Diagram 6 (headline orchestration), sequence diagram (Diagram 8).
+
+### 4. IGrillAdvisor (Domain) — Conversational Strategy (UL) for Grill-me NL Sessions
+```csharp
+public interface IGrillAdvisor
+{
+    Task<string> ConsultAsync(string message, string? cwd = null, Guid? lastDiagnosisId = null, string? compactContext = null);
+}
+```
+
+- **Primary Implementation (UL):** `GrokGrillAdvisor` (Infrastructure). Plain chat completions (no forced tool use / schema) via the OpenAI SDK configured for xAI. Receives compact session context (bounded evidence excerpts, token tally, last diagnosis summary, cwd) so the model can converse naturally without seeing the full bundle. All OpenAI SDK types confined here.
+- **Fallback:** No-key mode returns a deterministic acknowledgment and directs the user to `/diagnose`. Zero external cost, always available.
+- **Why this seam earns its keep:** Isolates the conversational NL path from the formal Diagnose pipeline. The TUI runner calls `IVigilClient.ConsultAsync` → `IGrillAdvisor.ConsultAsync` for free-form turns, and `IVigilClient.DiagnoseAsync` → `DiagnoseUseCase` for governed diagnosis. The two paths remain independently testable and swappable.
+- `GrillInteractive` (Application) provides pure, testable helpers (intent parsing, session state, path extraction, flag parsing) that support the TUI runner without touching SDK or presentation chrome.
+- `GrillSessionState` (Application) is the in-session accumulator: evidence list, turn history, token tally, last diagnosis, and compact context formatting for the advisor prompt.
 
 **Other Domain-owned seams/abstractions** (supporting the above): `IRedactor`, `IDiagnosisRepository`, `ICitationResolver`, `ISpecification<T>` (Composite (UL) form with `And`/`Or`/`Not` + `ToExpression` for EF later), `ArtifactInterpreterSelector`, `DiagnosisValidator`, etc.
 

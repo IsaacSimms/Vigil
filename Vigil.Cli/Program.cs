@@ -167,7 +167,7 @@ public static class Program
                 if (c is "help" or "?" )
                 {
                     AnsiConsole.MarkupLine("[yellow]/load <rel-path>  /paste [name]  (paste text, then END)[/]");
-                    AnsiConsole.MarkupLine("[yellow]/diagnose [--symptom \"...\"] [--offline] [--dry-run]  diagnose me — <symptom>[/]");
+                    AnsiConsole.MarkupLine("[yellow]/diagnose [--symptom \"...\"] [--offline]  diagnose me — <symptom>[/]");
                     AnsiConsole.MarkupLine("[yellow]/status  exit[/]");
                     continue;
                 }
@@ -320,16 +320,15 @@ public static class Program
         state.SetLastDiagnosis(d);
         if (d.Provenance.Usage != null)
             state.RecordTokens(d.Provenance.Usage.InputTokens, d.Provenance.Usage.OutputTokens);
-        RenderFullDiagnosisInSession(d, args.DryRun);
+        RenderFullDiagnosisInSession(d);
     }
 
     // == Full render of governed Diagnosis inside TUI session == //
     // Shows the complete cited output (summary, causes with chain/conf/severity, citations by artifact ID + snippet, provenance, tokens).
     // Mirrors the trust contract from the original design while staying inside the conversational flow.
-    static void RenderFullDiagnosisInSession(Diagnosis diagnosis, bool dryRun)
+    static void RenderFullDiagnosisInSession(Diagnosis diagnosis)
     {
-        var rule = new Rule(dryRun ? "[yellow]DRY-RUN PREVIEW (session)[/]" : "[green]Diagnosis[/]");
-        AnsiConsole.Write(rule);
+        AnsiConsole.Write(new Rule("[green]Diagnosis[/]"));
 
         var tree = new Tree($"[bold]{diagnosis.Summary}[/]");
 
@@ -353,9 +352,6 @@ public static class Program
         AnsiConsole.MarkupLine($"[grey]Provenance: {prov.AnalyzedBy} (tier){(prov.Reason.HasValue ? " " + prov.Reason : "")}[/]");
         if (prov.Usage != null)
             AnsiConsole.MarkupLine($"[grey]Tokens: in={prov.Usage.InputTokens} out={prov.Usage.OutputTokens}[/]");
-
-        if (dryRun)
-            AnsiConsole.MarkupLine("[yellow]This was a dry-run inside the session. No model call was made for the formal analysis.[/]");
     }
 }
 

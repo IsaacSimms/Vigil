@@ -46,7 +46,8 @@ public class GrokGrillAdvisor : IGrillAdvisor
                             "You have access to a compact session context (bounded evidence excerpts per loaded file, token usage so far, previous turns, last formal diagnosis id if any). " +
                             "Reference specific details from the context when relevant. Be concise but helpful. " +
                             "Ask clarifying questions if the evidence is ambiguous. " +
-                            "If the user appears to want a formal, cited, validated root-cause analysis, suggest they use the '/diagnose' command (or describe a clear symptom) so the governed pipeline with citations and provenance can be used. " +
+                            "If the user describes analysis of loaded or mentioned files (e.g. 'analyze these files in the folder', 'what is the issue and potential fix') or says 'use /diagnose', the TUI will automatically trigger the formal governed Diagnosis pipeline with citations, validation, and provenance (no need for explicit slash in many cases). " +
+                            "For pure chat or when you want to continue grilling without the formal output, just converse. " +
                             "Never invent evidence that is not in the provided context.";
 
             var userMsg = new StringBuilder();

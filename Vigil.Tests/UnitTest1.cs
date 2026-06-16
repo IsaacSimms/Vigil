@@ -7,6 +7,7 @@ using Vigil.Application;
 using Vigil.Application.Clients;
 using Vigil.Application.Coordinators;
 using Vigil.Application.UseCases;
+using Vigil.Domain;
 using Vigil.Domain.Abstractions;
 using Vigil.Domain.Entities;
 using Vigil.Domain.Enums;
@@ -153,7 +154,7 @@ public class DomainModelTests
             new EvidenceArtifact(Guid.NewGuid(), Modality.Text, ArtifactKind.ChangeRecord, "change foo to bar", null, "text/plain", DateTimeOffset.UtcNow.AddMinutes(-2), new ResourceRef("svc", "api")),
             new EvidenceArtifact(Guid.NewGuid(), Modality.Text, ArtifactKind.LogFile, "error at 10:05", null, "text/plain", DateTimeOffset.UtcNow.AddMinutes(-1), new ResourceRef("svc", "api"))
         };
-        var bundle = new EvidenceBundle(artifacts, new ExclusionReport(Array.Empty<string>()), "intermittent failure");
+        var bundle = new EvidenceBundle(artifacts, new ExclusionReport(Array.Empty<string>()), new ScopeHints(Symptom: "intermittent failure"));
 
         var result = heuristic.AnalyzeAsync(bundle, "failure after deploy").Result;
 
@@ -489,11 +490,10 @@ public class DomainModelTests
     [Fact]
     public void ParseDiagnoseFlagsWithRemainder_extracts_quoted_symptom_and_boolean_flags()
     {
-        var parsed = GrillInteractive.ParseDiagnoseFlagsWithRemainder(@"--symptom ""intermittent 500s"" --offline --dry-run");
+        var parsed = GrillInteractive.ParseDiagnoseFlagsWithRemainder(@"--symptom ""intermittent 500s"" --offline");
 
         parsed.Args.Symptom.Should().Be("intermittent 500s");
         parsed.Args.Offline.Should().BeTrue();
-        parsed.Args.DryRun.Should().BeTrue();
         parsed.Remainder.Should().BeNullOrWhiteSpace();
     }
 
@@ -505,6 +505,94 @@ public class DomainModelTests
         result.Should().NotBeNull();
         result!.IsDiagnoseIntent.Should().BeTrue();
         result.UtteranceRemainder.Should().Contain("api is 500ing");
+    }
+
+    // == TDD for broadened NL (folder/dir + "analyze ... Use /diagnose" etc) so natural language can drive full load + governed diagnose == //
+
+    [Fact]
+    public void TryParseDiagnoseIntent_detects_user_example_with_analyze_folder_and_use_diagnose()
+    {
+        var utterance = "analyze each of these files in this folder and tell me what the issue is, as well as a potential fix. Use /diagnose.";
+        var result = GrillInteractive.TryParseDiagnoseIntent(utterance);
+
+        result.Should().NotBeNull();
+        result!.IsDiagnoseIntent.Should().BeTrue();
+        (result.UtteranceRemainder ?? utterance).Should().Contain("issue");
+    }
+
+    [Fact]
+    public void ShouldAttemptAutoLoad_true_for_analyze_phrase_with_folder_even_without_specific_filename_tokens()
+    {
+        GrillInteractive.ShouldAttemptAutoLoad("analyze each of these files in this folder and tell me what the issue is").Should().BeTrue();
+        GrillInteractive.ShouldAttemptAutoLoad("look at the logs in the current directory").Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsSensibleEvidenceFile_accepts_common_evidence_types_and_rejects_junk_and_hidden()
+    {
+        GrillInteractive.IsSensibleEvidenceFile("app.log").Should().BeTrue();
+        GrillInteractive.IsSensibleEvidenceFile("changes.txt").Should().BeTrue();
+        GrillInteractive.IsSensibleEvidenceFile("deploy.json").Should().BeTrue();
+        GrillInteractive.IsSensibleEvidenceFile("config.yaml").Should().BeTrue();
+        GrillInteractive.IsSensibleEvidenceFile(".gitignore").Should().BeFalse();
+        GrillInteractive.IsSensibleEvidenceFile(@"C:\incident\.git\config").Should().BeFalse();
+        GrillInteractive.IsSensibleEvidenceFile("big.bin").Should().BeFalse();
+        GrillInteractive.IsSensibleEvidenceFile("photo.png").Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryLoadSensibleFilesFromLaunchDirectory_loads_only_sensible_files_from_temp_dir_and_skips_duplicates()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "vigil-folder-load-" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(dir);
+        System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "app.log"), "ERROR at 14:02");
+        System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "changes.txt"), "deploy to svc");
+        System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "config.yaml"), "port: 80");
+        System.IO.File.WriteAllText(System.IO.Path.Combine(dir, ".secret"), "dontload");
+        System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "image.png"), "binary");
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(dir, "subdir"));
+        System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "subdir", "nested.log"), "should not load");
+
+        try
+        {
+            var state = new GrillSessionState(dir);
+            state.AddEvidence(new RawSource("changes.txt", "old", null, "prior"));
+
+            var loaded = state.TryLoadSensibleFilesFromLaunchDirectory(maxFiles: 10);
+
+            loaded.Should().Contain("app.log");
+            loaded.Should().Contain("config.yaml");
+            loaded.Should().NotContain("changes.txt");
+            loaded.Should().NotContain("image.png");
+            state.CurrentEvidenceCount.Should().Be(1 + 2);
+        }
+        finally
+        {
+            System.IO.Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void TryExtractAndLoadPaths_with_folder_phrase_populates_state_from_directory()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "vigil-nl-folder-" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(dir);
+        System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "metrics.csv"), "cpu,high");
+        System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "rollout.log"), "started deploy");
+
+        try
+        {
+            var state = new GrillSessionState(dir);
+            var input = "analyze each of these files in this folder and tell me the issue. Use /diagnose";
+            var result = GrillInteractive.TryExtractAndLoadPaths(input, state);
+
+            state.CurrentEvidenceCount.Should().BeGreaterThan(0);
+            // Loaded via dir scan even without explicit filename tokens in regex extractors
+        }
+        finally
+        {
+            System.IO.Directory.Delete(dir, recursive: true);
+        }
     }
 
     [Fact]
@@ -521,20 +609,20 @@ public class DomainModelTests
         state.AppendTurn("payment service started failing after deploy", "noted");
 
         var fromFlag = GrillInteractive.ResolveSymptom(
-            new DiagnoseCommandArgs("flag symptom", false, false),
+            new DiagnoseCommandArgs("flag symptom", false),
             "remainder symptom",
             state);
         fromFlag.Symptom.Should().Be("flag symptom");
         fromFlag.UsedGenericSymptomFallback.Should().BeFalse();
 
         var fromRemainder = GrillInteractive.ResolveSymptom(
-            new DiagnoseCommandArgs(null, false, false),
+            new DiagnoseCommandArgs(null, false),
             "api timeouts after config change",
             state);
         fromRemainder.Symptom.Should().Be("api timeouts after config change");
 
         var fromTurn = GrillInteractive.ResolveSymptom(
-            new DiagnoseCommandArgs(null, false, false),
+            new DiagnoseCommandArgs(null, false),
             null,
             state);
         fromTurn.Symptom.Should().Contain("payment service");
@@ -546,7 +634,7 @@ public class DomainModelTests
         var state = new GrillSessionState(@"C:\incident");
         var request = GrillInteractive.BuildDiagnoseRequest(
             state,
-            new DiagnoseCommandArgs(null, true, false),
+            new DiagnoseCommandArgs(null, true),
             "symptom only");
 
         request.Sources.Should().BeEmpty();
@@ -626,6 +714,73 @@ public class DomainModelTests
         msg.Should().Contain("preview truncated");
         msg.Should().Contain("full content in evidence as paste-1.txt");
         msg.Length.Should().BeLessThan(full.Length);
+    }
+
+    // == TDD for ArtifactRelevanceScorer (pure Domain scoring module) == //
+
+    private EvidenceArtifact CreateScorerArtifact(ArtifactKind kind, DateTimeOffset? timestamp, ResourceRef? resource = null) =>
+        new EvidenceArtifact(Guid.NewGuid(), Modality.Text, kind, "content", null, "text/plain", timestamp, resource);
+
+    [Fact]
+    public void ArtifactRelevanceScorer_exact_timestamp_match_gives_max_temporal_score()
+    {
+        var refTime = DateTimeOffset.UtcNow;
+        var artifact = CreateScorerArtifact(ArtifactKind.LogFile, refTime);
+
+        ArtifactRelevanceScorer.Score(artifact, refTime).Should().BeApproximately(1000.0, precision: 0.001);
+    }
+
+    [Fact]
+    public void ArtifactRelevanceScorer_ChangeRecord_adds_500_bonus()
+    {
+        var refTime = DateTimeOffset.UtcNow;
+        var changeRecord = CreateScorerArtifact(ArtifactKind.ChangeRecord, refTime);
+        var logFile     = CreateScorerArtifact(ArtifactKind.LogFile,      refTime);
+
+        var delta = ArtifactRelevanceScorer.Score(changeRecord, refTime) - ArtifactRelevanceScorer.Score(logFile, refTime);
+        delta.Should().BeApproximately(500.0, precision: 0.001);
+    }
+
+    [Fact]
+    public void ArtifactRelevanceScorer_resource_match_adds_500_non_match_gets_nothing()
+    {
+        var refTime = DateTimeOffset.UtcNow;
+        var target  = new ResourceRef("svc", "api");
+        var matching    = CreateScorerArtifact(ArtifactKind.LogFile, refTime, target);
+        var nonMatching = CreateScorerArtifact(ArtifactKind.LogFile, refTime, new ResourceRef("svc", "db"));
+
+        var matchScore    = ArtifactRelevanceScorer.Score(matching,    refTime, target);
+        var nonMatchScore = ArtifactRelevanceScorer.Score(nonMatching, refTime, target);
+
+        (matchScore - nonMatchScore).Should().BeApproximately(500.0, precision: 0.001);
+    }
+
+    [Fact]
+    public void ArtifactRelevanceScorer_presence_bonus_100_when_no_target()
+    {
+        var refTime     = DateTimeOffset.UtcNow;
+        var withResource    = CreateScorerArtifact(ArtifactKind.LogFile, refTime, new ResourceRef("svc", "api"));
+        var withoutResource = CreateScorerArtifact(ArtifactKind.LogFile, refTime);
+
+        var delta = ArtifactRelevanceScorer.Score(withResource, refTime) - ArtifactRelevanceScorer.Score(withoutResource, refTime);
+        delta.Should().BeApproximately(100.0, precision: 0.001);
+    }
+
+    [Fact]
+    public void ArtifactRelevanceScorer_null_referenceTime_skips_temporal()
+    {
+        var artifact = CreateScorerArtifact(ArtifactKind.ChangeRecord, DateTimeOffset.UtcNow);
+
+        ArtifactRelevanceScorer.Score(artifact, referenceTime: null).Should().BeApproximately(500.0, precision: 0.001);
+    }
+
+    [Fact]
+    public void ArtifactRelevanceScorer_no_timestamp_on_artifact_skips_temporal()
+    {
+        var artifact = CreateScorerArtifact(ArtifactKind.LogFile, timestamp: null, new ResourceRef("svc", "api"));
+
+        // Only presence bonus (no target) — no temporal, no ChangeRecord
+        ArtifactRelevanceScorer.Score(artifact, DateTimeOffset.UtcNow).Should().BeApproximately(100.0, precision: 0.001);
     }
 
     [Fact]

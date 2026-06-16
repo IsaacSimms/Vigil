@@ -40,7 +40,7 @@ When discussing design, writing comments, commit messages, or reviewing, employ 
 - **Adapter (UL)** — a concrete thing that satisfies an Interface (UL) at a Seam (UL)
 - **Strategy (UL)**, **Depth (UL)**, **Leverage (UL)**, **Locality (UL)**, **Simple Factory (UL)** (selection, explicitly not GoF Factory Method), etc.
 
-See `docs/Vigil-SystemsDesign.md` §12 (patterns table) and the teaching/design notes in the diagrams for precise usage and justification. The primary Seams (UL) are `IDiagnosisAnalyzer`, `IArtifactInterpreter`, and `IVigilClient`.
+See `docs/Vigil-SystemsDesign.md` §12 (patterns table) and the teaching/design notes in the diagrams for precise usage and justification. The primary Seams (UL) are `IDiagnosisAnalyzer`, `IArtifactInterpreter`, `IVigilClient`, and `IGrillAdvisor`.
 
 ## Coding Conventions (in addition to the strict rules above)
 
@@ -54,7 +54,7 @@ See `docs/Vigil-SystemsDesign.md` §12 (patterns table) and the teaching/design 
 
 - Only use `/// <summary>` XML documentation comments at class-level, interface-level, or file-level (describing the entire type). Do **not** use them on individual properties, fields, methods, or enum members. Use ordinary `//` comments for those.
 
-- Prefer editing and refactoring existing code over creating brand-new files or types (the "deletion test" and "one adapter means hypothetical, two means real" principles apply).
+- Prefer editing and refactoring existing code over creating brand-new files or types (the "deletion test" and "one adapter means hypothetical, two means real" principles apply). This guardrail may be loosened by explicit user direction for hygiene splits of overgrown modules (e.g., extracting GrillSessionState from GrillInteractive helpers) when it improves scan-ability, Locality (UL), and maintainability.
 
 - When editing, use the most targeted/inline change possible.
 

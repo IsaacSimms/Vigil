@@ -14,7 +14,7 @@ namespace Vigil.Application.UseCases;
 /// Orchestrates the full diagnose pipeline (gather -> interpret -> assemble -> redact -> analyze -> validate -> persist).
 /// Depends only on Domain abstractions (Dependency Inversion). All collaborators injected at composition root.
 /// The stochastic step (IDiagnosisAnalyzer) is isolated; deterministic gate (DiagnosisValidator) follows.
-/// Supports --dry-run (preview bundle without model call) and --offline (force heuristic) per §3/§5.
+/// Supports --offline (force heuristic, zero cost) per §3/§5.
 /// </summary>
 public class DiagnoseUseCase
 {
@@ -59,20 +59,6 @@ public class DiagnoseUseCase
 
         // 3. Redact before egress
         var redacted = _redactor.Redact(bundle);
-
-        if (request.DryRun)
-        {
-            // Dry-run: preview the bundle without model call (per §3/§10). Use heuristic for "preview diagnosis" since cheap.
-            // Still validate for consistency.
-            var previewResult = await _heuristicAnalyzer.AnalyzeAsync(redacted, request.Hints?.Symptom);
-            RawDiagnosis previewRaw = previewResult.IsSuccess && previewResult.Diagnosis != null 
-                ? previewResult.Diagnosis 
-                : new RawDiagnosis("DRY-RUN PREVIEW - evidence assembled and redacted (no model call)", new List<CandidateCause>());
-            var previewValidated = _validator.Validate(previewRaw, redacted, AnalyzerTier.Heuristic);
-            // Note: in real, could return special preview without persist, but per v1 skeleton we persist the preview diagnosis.
-            await _repository.SaveAsync(previewValidated.Diagnosis);
-            return previewValidated.Diagnosis;
-        }
 
         // 4. Analyze (seam) - choose based on offline flag
         var effectiveAnalyzer = request.Offline ? _heuristicAnalyzer : _modelAnalyzer;

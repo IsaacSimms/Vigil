@@ -50,7 +50,7 @@ I suspect the DB pool
 /status   # see evidence, tokens, last diagnosis
 ```
 
-The LLM (via `IGrillAdvisor` / `GrokGrillAdvisor`) acts as a debugging partner: references context, suggests next evidence, recommends formal `/diagnose` when a cited root cause makes sense.
+The LLM (via `IGrillAdvisor` / `GrokGrillAdvisor`) acts as a debugging partner: references context, suggests next evidence. Natural language can now also trigger the formal governed `/diagnose` pipeline directly (e.g. "analyze each of these files in this folder and tell me the issue plus a potential fix. Use /diagnose") — files mentioned or "in this folder" are auto-loaded into session evidence when intent is clear; the TUI dispatches to the full cited+validated Diagnosis path instead of (or in addition to) chat. Explicit `/load` + `/diagnose` remain available for precision.
 
 ### Session Commands (Kept Flags + Power User Workflows)
 - `/load <relative-or-absolute-path>` — Read a file from disk (relative to launch dir), turn it into a `RawSource`, add to session evidence. Use real logs/changes from your incident dir.
