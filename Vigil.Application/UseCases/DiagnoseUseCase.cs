@@ -7,6 +7,7 @@ using Vigil.Domain.Abstractions;
 using Vigil.Domain.Entities;
 using Vigil.Domain.Enums;
 using Vigil.Domain.Models;
+using Vigil.Domain.ValueObjects;
 
 namespace Vigil.Application.UseCases;
 
@@ -64,23 +65,32 @@ public class DiagnoseUseCase
         var effectiveAnalyzer = request.Offline ? _heuristicAnalyzer : _modelAnalyzer;
         var result = await effectiveAnalyzer.AnalyzeAsync(redacted, request.Hints?.Symptom);
 
+        // Assemble the real provenance here (per §9 the fallback decision lives in the use case).
+        // The gate stamps this verbatim, so token cost and the reason for any degradation survive.
         RawDiagnosis raw;
+        AnalyzerProvenance provenance;
         if (result.IsSuccess && result.Diagnosis != null)
         {
             raw = result.Diagnosis;
+            // Offline is a chosen heuristic, not a degradation — record OfflineFlag so the engineer sees why.
+            var reason = request.Offline ? FallbackReason.OfflineFlag : (FallbackReason?)null;
+            provenance = new AnalyzerProvenance(result.Tier, reason, result.Usage);
         }
         else
         {
-            // Fallback decision lives in use case (per §9). Call heuristic explicitly.
+            // Model failed: fall back to heuristic and record WHY we degraded (never silently degrade).
             var fallbackResult = await _heuristicAnalyzer.AnalyzeAsync(redacted, request.Hints?.Symptom);
-            raw = fallbackResult.IsSuccess && fallbackResult.Diagnosis != null 
-                ? fallbackResult.Diagnosis 
+            raw = fallbackResult.IsSuccess && fallbackResult.Diagnosis != null
+                ? fallbackResult.Diagnosis
                 : new RawDiagnosis("Heuristic fallback", new List<CandidateCause>());
+            provenance = new AnalyzerProvenance(
+                AnalyzerTier.Heuristic,
+                result.FailureReason ?? FallbackReason.ApiUnavailable,
+                fallbackResult.Usage);
         }
 
         // 5. Validate (deterministic gate §6)
-        var tier = result.IsSuccess ? result.Tier : AnalyzerTier.Heuristic;
-        var validated = _validator.Validate(raw, redacted, tier);
+        var validated = _validator.Validate(raw, redacted, provenance);
 
         // 6. Persist
         await _repository.SaveAsync(validated.Diagnosis);

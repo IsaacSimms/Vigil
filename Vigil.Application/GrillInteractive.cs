@@ -370,6 +370,7 @@ namespace Vigil.Application
 
         // == NL auto-load intent gate (only load when user signals file intent or uses explicit paths) == //
         // Now also triggers for "analyze ... files in this folder" (dir intent + verb) even without foo.log tokens.
+        // Broadened to support diagnose-intent NL (e.g. "run /diagnose using the files in this directory") for natural skill invocation.
         public static bool ShouldAttemptAutoLoad(string input)
         {
             if (string.IsNullOrWhiteSpace(input))
@@ -389,6 +390,10 @@ namespace Vigil.Application
 
             // Dir signal + analysis language is sufficient (e.g. the verb regex already covers "analyze")
             if (hasDirSignal && LoadIntentVerbRegex.IsMatch(input))
+                return true;
+
+            // When user explicitly references /diagnose (or strong signals) + "files in this directory", treat as intent to load then govern.
+            if (hasDirSignal && ContainsFormalDiagnosisSignal(input))
                 return true;
 
             return false;

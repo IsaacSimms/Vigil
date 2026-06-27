@@ -137,7 +137,7 @@ vigil diagnose --help    # ← one-shot / scripting still works
 
 This produces a true standalone `.exe` that does **not** require .NET to be installed on the target machine. The bare `vigil` command will enter the interactive natural-language session exactly as designed.
 
-You only need to do the publish step once (or whenever you pull new changes). After that, just use `vigil` like any other CLI tool.
+You only need to do the publish step once (or whenever you pull new changes to TUI, NL intent, GrillInteractive, or GrillSessionState). Re-publish to pick up fixes (e.g. improved natural language routing to auto-/load + governed /diagnose). After that, just use `vigil` like any other CLI tool.
 
 ## Development on the Platform
 
@@ -145,7 +145,7 @@ Vigil is built for ambitious extension while keeping the core trustworthy.
 
 ### Build & Test
 - `dotnet build`
-- `dotnet test` (currently 16 tests; includes original pipeline + new TUI helpers, `IGrillAdvisor` seam crossing, and multi-turn session simulations that drive state + Consult + Diagnose paths).
+- `dotnet test` (includes the core pipeline + TUI helpers, NL intent parsing for auto-load + /diagnose, `IGrillAdvisor` seam, and multi-turn simulations crossing state + Consult + Diagnose).
 
 ### TDD Expectations
 Non-trivial behavior (new commands in the runner, advisor enhancements, context logic, seam interactions) is test-first with xUnit + FluentAssertions. The Interface (UL) is the test surface.

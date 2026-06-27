@@ -6,8 +6,7 @@ using System.Linq;
 using Vigil.Domain.Abstractions;
 using Vigil.Domain.Entities;
 using Vigil.Domain.Models;
-using Vigil.Domain.ValueObjects; // for ResourceRef, AnalyzerProvenance in skeleton paths
-using Vigil.Domain.Enums;
+using Vigil.Domain.ValueObjects; // for ResourceRef, AnalyzerProvenance, Citation
 
 namespace Vigil.Application.Coordinators;
 
@@ -26,16 +25,20 @@ public class DiagnosisValidator
         _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
     }
 
-    public ValidationResult Validate(RawDiagnosis raw, EvidenceBundle bundle, AnalyzerTier tier = AnalyzerTier.Model)
+    // The use case assembles the real AnalyzerProvenance (tier + usage + fallback reason per §9);
+    // the gate stamps it onto the Diagnosis verbatim rather than reconstructing a hollow one.
+    public ValidationResult Validate(RawDiagnosis raw, EvidenceBundle bundle, AnalyzerProvenance provenance)
     {
+        if (provenance == null) throw new ArgumentNullException(nameof(provenance));
+
         if (raw == null || bundle == null)
         {
-            // Minimal failure path for skeleton
+            // Minimal failure path; still carries the analyzer's real provenance.
             var emptyDiagnosis = new Diagnosis(
                 Guid.NewGuid(),
-                new ResourceRef("unknown", "unknown"), // no Hints on bundle; hints were input to assembler
-                "Validation failed (skeleton)",
-                new AnalyzerProvenance(tier),
+                bundle?.Hints?.Resource ?? new ResourceRef("unknown", "unknown"),
+                "Validation failed (invalid input)",
+                provenance,
                 DateTimeOffset.UtcNow,
                 Array.Empty<CandidateCause>());
             return new ValidationResult(emptyDiagnosis, new ValidationReport(new[] { "Invalid input to validator" }, Array.Empty<string>()));
@@ -92,12 +95,13 @@ public class DiagnosisValidator
             drops.Add($"Truncated {validCauses.Count - ranked.Count} lower-confidence causes to cap of 5");
         }
 
-        // Build final Diagnosis (skeleton provenance; real from analyzer result)
+        // Build final Diagnosis. Subject is the engineer's declared scope when present (§4);
+        // provenance is the real one supplied by the use case (tier + usage + reason).
         var diagnosis = new Diagnosis(
             Guid.NewGuid(),
-            new ResourceRef("subject", "unknown"), // bundle does not carry hints; was used upstream
+            bundle.Hints?.Resource ?? new ResourceRef("unknown", "unknown"),
             raw.Summary,
-            new AnalyzerProvenance(tier), // from analyzer result or default
+            provenance,
             DateTimeOffset.UtcNow,
             ranked);
 

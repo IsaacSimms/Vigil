@@ -101,11 +101,60 @@ public class DomainModelTests
         });
         var bundle = new EvidenceBundle(new List<EvidenceArtifact>(), new ExclusionReport(Array.Empty<string>()));
 
-        var result = validator.Validate(raw, bundle);
+        var result = validator.Validate(raw, bundle, new AnalyzerProvenance(AnalyzerTier.Model));
 
         result.Diagnosis.Causes.Should().HaveCount(1);
         result.Report.Drops.Should().BeEmpty();
     }
+
+    [Fact]
+    public void DiagnosisValidator_stamps_provided_provenance_onto_diagnosis()
+    {
+        // The gate must carry the analyzer's real provenance (tier + usage + fallback reason) onto the Diagnosis (§4/§6).
+        var validator = new DiagnosisValidator(new FakeCitationResolver(resolves: true));
+        var raw = SingleCauseRaw();
+        var bundle = new EvidenceBundle(new List<EvidenceArtifact>(), new ExclusionReport(Array.Empty<string>()));
+        var provenance = new AnalyzerProvenance(AnalyzerTier.Model, null, new TokenUsage(123, 45));
+
+        var result = validator.Validate(raw, bundle, provenance);
+
+        result.Diagnosis.Provenance.Should().Be(provenance);
+        result.Diagnosis.Provenance.Usage!.InputTokens.Should().Be(123);
+        result.Diagnosis.Provenance.Usage!.OutputTokens.Should().Be(45);
+    }
+
+    [Fact]
+    public void DiagnosisValidator_uses_bundle_hints_resource_as_subject()
+    {
+        // Subject is the thing that had the incident; use the engineer's declared scope when present (§4).
+        var validator = new DiagnosisValidator(new FakeCitationResolver(resolves: true));
+        var subject = new ResourceRef("service", "api");
+        var bundle = new EvidenceBundle(
+            new List<EvidenceArtifact>(),
+            new ExclusionReport(Array.Empty<string>()),
+            new ScopeHints(Resource: subject));
+
+        var result = validator.Validate(SingleCauseRaw(), bundle, new AnalyzerProvenance(AnalyzerTier.Model));
+
+        result.Diagnosis.Subject.Should().Be(subject);
+    }
+
+    [Fact]
+    public void DiagnosisValidator_subject_falls_back_to_unknown_when_no_hints()
+    {
+        var validator = new DiagnosisValidator(new FakeCitationResolver(resolves: true));
+        var bundle = new EvidenceBundle(new List<EvidenceArtifact>(), new ExclusionReport(Array.Empty<string>()));
+
+        var result = validator.Validate(SingleCauseRaw(), bundle, new AnalyzerProvenance(AnalyzerTier.Heuristic));
+
+        result.Diagnosis.Subject.Should().Be(new ResourceRef("unknown", "unknown"));
+    }
+
+    private static RawDiagnosis SingleCauseRaw() => new RawDiagnosis("summary", new List<CandidateCause>
+    {
+        new CandidateCause("cause", null, new Confidence(0.9), Severity.High, CauseCategory.Deployment,
+            new List<Citation> { new Citation(Guid.NewGuid(), "snippet") })
+    });
 
     private EvidenceArtifact CreateTestArtifact(int seed, ArtifactKind kind, DateTimeOffset ts)
     {
@@ -217,6 +266,87 @@ public class DomainModelTests
         // repo should have it
         var history = repo.QueryAsync(new TrueSpecification<Diagnosis>()).Result;
         history.Should().Contain(d => d.Id == diagnosis.Id);
+    }
+
+    [Fact]
+    public void DiagnoseUseCase_carries_model_token_usage_into_provenance()
+    {
+        // Model-tier success: Usage must survive the gate onto the Diagnosis (cost observation, §4).
+        var model = new StubAnalyzer(new AnalyzerResult(true, ModelRaw(), AnalyzerTier.Model, null, new TokenUsage(100, 50)));
+        var useCase = BuildUseCase(model);
+        var request = new DiagnoseRequest(new[] { new RawSource(Text: "plain log line") }, new ScopeHints(Symptom: "x"));
+
+        var diagnosis = useCase.Execute(request).Result;
+
+        diagnosis.Provenance.AnalyzedBy.Should().Be(AnalyzerTier.Model);
+        diagnosis.Provenance.Reason.Should().BeNull();
+        diagnosis.Provenance.Usage!.InputTokens.Should().Be(100);
+        diagnosis.Provenance.Usage!.OutputTokens.Should().Be(50);
+    }
+
+    [Fact]
+    public void DiagnoseUseCase_fallback_records_model_failure_reason()
+    {
+        // Model refusal -> heuristic fallback; the WHY must be visible (never silently degrade, §4/§9).
+        var model = new StubAnalyzer(new AnalyzerResult(false, null, AnalyzerTier.Model, FallbackReason.Refusal));
+        var useCase = BuildUseCase(model);
+        var request = new DiagnoseRequest(
+            new[] { new RawSource(Text: "service error after change deploy-9 to api") },
+            new ScopeHints(Symptom: "500s"));
+
+        var diagnosis = useCase.Execute(request).Result;
+
+        diagnosis.Provenance.AnalyzedBy.Should().Be(AnalyzerTier.Heuristic);
+        diagnosis.Provenance.Reason.Should().Be(FallbackReason.Refusal);
+    }
+
+    [Fact]
+    public void DiagnoseUseCase_offline_stamps_offline_flag_reason()
+    {
+        // Offline is a chosen heuristic, not a degradation; Reason should say so, distinct from a true fallback.
+        var model = new StubAnalyzer(new AnalyzerResult(true, ModelRaw(), AnalyzerTier.Model, null, new TokenUsage(9, 9)));
+        var useCase = BuildUseCase(model);
+        var request = new DiagnoseRequest(
+            new[] { new RawSource(Text: "service error after change deploy-9 to api") },
+            new ScopeHints(Symptom: "500s"),
+            Offline: true);
+
+        var diagnosis = useCase.Execute(request).Result;
+
+        diagnosis.Provenance.AnalyzedBy.Should().Be(AnalyzerTier.Heuristic);
+        diagnosis.Provenance.Reason.Should().Be(FallbackReason.OfflineFlag);
+    }
+
+    private static RawDiagnosis ModelRaw() => new RawDiagnosis("model summary", new List<CandidateCause>
+    {
+        new CandidateCause("cause", null, new Confidence(0.8), Severity.High, CauseCategory.Deployment,
+            new List<Citation> { new Citation(Guid.NewGuid(), "s") })
+    });
+
+    private static DiagnoseUseCase BuildUseCase(IDiagnosisAnalyzer model)
+    {
+        var selector = new ArtifactInterpreterSelector(new IArtifactInterpreter[]
+        {
+            new PlainTextInterpreter(),
+            new ChangeRecordInterpreter()
+        });
+        return new DiagnoseUseCase(
+            selector,
+            new EvidenceAssembler(),
+            new NoOpRedactor(),
+            model,
+            new HeuristicDiagnosisAnalyzer(),
+            new DiagnosisValidator(new FakeCitationResolver(true)),
+            new InMemoryDiagnosisRepository());
+    }
+
+    // == Stub analyzer for the model seam (returns a fixed AnalyzerResult; no SDK, deterministic) == //
+    private class StubAnalyzer : IDiagnosisAnalyzer
+    {
+        private readonly AnalyzerResult _result;
+        public StubAnalyzer(AnalyzerResult result) => _result = result;
+        public System.Threading.Tasks.Task<AnalyzerResult> AnalyzeAsync(EvidenceBundle bundle, string? symptom)
+            => System.Threading.Tasks.Task.FromResult(_result);
     }
 
     private class NoOpRedactor : IRedactor
@@ -525,6 +655,8 @@ public class DomainModelTests
     {
         GrillInteractive.ShouldAttemptAutoLoad("analyze each of these files in this folder and tell me what the issue is").Should().BeTrue();
         GrillInteractive.ShouldAttemptAutoLoad("look at the logs in the current directory").Should().BeTrue();
+        // Support pure "run /diagnose on files in this dir" NL without explicit load/analyze verb
+        GrillInteractive.ShouldAttemptAutoLoad("run /diagnose the files in this directory now").Should().BeTrue();
     }
 
     [Fact]
@@ -588,6 +720,39 @@ public class DomainModelTests
 
             state.CurrentEvidenceCount.Should().BeGreaterThan(0);
             // Loaded via dir scan even without explicit filename tokens in regex extractors
+        }
+        finally
+        {
+            System.IO.Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // == TDD lock for user's reported screenshot utterance in ComplexWithConfigAndChanges (the exact NL that produced EvidenceCount=0) == //
+    [Fact]
+    public void TryExtractAndLoadPaths_exact_user_screenshot_utterance_triggers_dir_load_and_diagnose_intent()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "vigil-screenshot-nl-" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(dir);
+        System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "auth.log"), "ERROR auth failed after config change");
+        System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "changes.txt"), "deploy auth-v1.2.0\nconfig jwt updated");
+        System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "config.yaml"), "auth:\n  jwt:\n    secret: old\nserver:\n  port: 8080");
+
+        try
+        {
+            var state = new GrillSessionState(dir);
+            var utterance = "Load the files in this directory into context and run /diagnose to figure out what the issue is";
+
+            var diagIntent = GrillInteractive.TryParseDiagnoseIntent(utterance);
+            diagIntent.Should().NotBeNull();
+            diagIntent!.IsDiagnoseIntent.Should().BeTrue();
+
+            var loadResult = GrillInteractive.TryExtractAndLoadPaths(utterance, state);
+
+            state.CurrentEvidenceCount.Should().Be(3);
+            loadResult.LoadedFileNames.Should().HaveCount(3);
+            loadResult.LoadedFileNames.Should().Contain("auth.log");
+            loadResult.LoadedFileNames.Should().Contain("changes.txt");
+            loadResult.LoadedFileNames.Should().Contain("config.yaml");
         }
         finally
         {
