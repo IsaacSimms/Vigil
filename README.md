@@ -8,7 +8,53 @@ The **primary way to use Vigil is the interactive Grill-me TUI** (launch with ba
 
 One-shot/scripted usage (`vigil diagnose ...`) is fully preserved for pipes, CI, automation, and power users.
 
+## Download (Windows — no .NET install)
+
+A self-contained build is published on [GitHub Releases](https://github.com/IsaacSimms/Vigil/releases/latest).
+
+| Asset | What you get |
+|-------|----------------|
+| [Vigil-win-x64.zip](https://github.com/IsaacSimms/Vigil/releases/latest/download/Vigil-win-x64.zip) | `vigil.exe`, sample logs, `QUICKSTART.txt`, `run-demo.ps1` |
+
+Unzip anywhere, open PowerShell in that folder, and run `.\vigil`. No SDK, runtime, or git clone required. Windows SmartScreen may warn on unsigned executables — choose **More info → Run anyway**.
+
+Current release: [v1.0.0](https://github.com/IsaacSimms/Vigil/releases/tag/v1.0.0).
+
 ## Quick Start (Interactive Grill-me Session — Primary UX)
+
+### From the GitHub Release (recommended)
+
+```powershell
+# 1. Download and unzip Vigil-win-x64.zip (link above)
+cd C:\path\to\Vigil-win-x64
+
+# 2. Optional — enable Grok for natural-language turns (offline/heuristic works without a key)
+$env:XAI_API_KEY = "xai-your-key-here"
+
+# 3. cd into the directory with your incident context (or stay in the unzip folder for the bundled demo)
+cd C:\path\to\my\incident
+
+# 4. Launch the TUI (bare command = interactive session)
+.\vigil
+
+# Inside the session:
+the payment service started 500ing right after deploy-456 to the api
+/status
+/load samples\app.log
+/load samples\changes.txt
+/diagnose --symptom "intermittent 500s after the change"
+/status
+exit
+```
+
+Offline one-shot demo (no API key):
+
+```powershell
+cd C:\path\to\Vigil-win-x64
+.\run-demo.ps1
+```
+
+### From source (developers)
 
 ```powershell
 # 1. Set your xAI key (optional but enables real Grok for NL turns; without it you get heuristic + full /diagnose path)
@@ -19,7 +65,6 @@ cd C:\path\to\my\incident
 
 # 3. Launch the TUI (bare command = interactive session)
 dotnet run --project Vigil.Cli
-# or, after publish: .\vigil   (or vigil if on PATH)
 
 # Inside the session:
 the payment service started 500ing right after deploy-456 to the api
@@ -36,7 +81,8 @@ The session shows a banner with the launch directory, tracks evidence count + tu
 ## Using the Grill-me TUI
 
 ### Launch
-- `cd /your/dir; dotnet run --project Vigil.Cli` (or published `vigil`)
+- Release: `cd /your/dir; .\vigil` (from the unzipped [GitHub Release](https://github.com/IsaacSimms/Vigil/releases/latest))
+- Source: `cd /your/dir; dotnet run --project Vigil.Cli`
 - No args or bare invocation in an interactive terminal enters the TUI (the guard in Program.cs).
 - Subcommands (`vigil diagnose ...`) bypass the TUI for scripted use.
 
@@ -84,11 +130,13 @@ Outputs a real Diagnosis (heuristic here; Grok when key set) with citations that
 
 ## One-Shot / Scripting Usage (Preserved for Compat + Power Users)
 
-All the original pipe-first behavior works unchanged:
+All the original pipe-first behavior works unchanged. Examples below use `dotnet run` from a clone; with the release zip, substitute `.\vigil` for `dotnet run --project Vigil.Cli --`.
 
 ```powershell
 # Pipe evidence + flags
 type Docs\TestFiles\SimpleLogIncident\app.log | dotnet run --project Vigil.Cli -- diagnose --symptom "payment failures after deploy"
+# Release equivalent:
+# type samples\app.log | .\vigil diagnose --symptom "payment failures after deploy"
 
 # With changes
 type Docs\TestFiles\SimpleLogIncident\app.log | dotnet run --project Vigil.Cli -- diagnose --changes "Docs\TestFiles\SimpleLogIncident\changes.txt" --symptom "intermittent errors after change"
@@ -105,39 +153,49 @@ type Docs\TestFiles\JsonLogsDeployment\deploy.json | dotnet run --project Vigil.
 
 See `vigil diagnose --help` for options. `--json` and the core pipeline remain the way to integrate Vigil as infrastructure.
 
-## Local Setup (Windows + PowerShell)
+## Local Setup
+
+### End users (GitHub Release)
+
+1. Download [Vigil-win-x64.zip](https://github.com/IsaacSimms/Vigil/releases/latest/download/Vigil-win-x64.zip) and unzip.
+2. Open PowerShell in the unzipped folder.
+3. Optional: set `XAI_API_KEY` (env var or User scope). Without it, everything still works via the heuristic + full `/diagnose` path.
+4. `.\vigil` for the TUI, or `.\vigil diagnose ...` for one-shot. See `QUICKSTART.txt` in the zip.
+
+Add the folder to your `PATH` if you want bare `vigil` from any directory.
+
+### Developers (build from source)
 
 1. .NET 8 SDK.
-2. `git clone ... ; cd Vigil`
+2. `git clone https://github.com/IsaacSimms/Vigil.git ; cd Vigil`
 3. `dotnet build`
 4. Set `XAI_API_KEY` (env var or User scope). Without it everything still works via the heuristic + full diagnosis path.
 5. `dotnet run --project Vigil.Cli` (bare) for TUI, or with `diagnose ...` for one-shot.
 
-### Running as a standalone `vigil` command (recommended)
+### Publishing a new GitHub Release (maintainers)
 
-For the best experience — especially the bare-command interactive TUI — publish Vigil as a self-contained executable and put it on your `PATH`:
+To rebuild the release zip locally (same artifact attached to [GitHub Releases](https://github.com/IsaacSimms/Vigil/releases)):
 
 ```powershell
-# From the repo root
+# From the repo root — outputs dist\Vigil-win-x64.zip + dist\Vigil-win-x64\
+.\scripts\publish-release.ps1
+```
+
+Manual publish (equivalent core step):
+
+```powershell
 dotnet publish Vigil.Cli\Vigil.Cli.csproj `
     -c Release `
     -r win-x64 `
     --self-contained true `
     -p:PublishSingleFile=true `
     -o .\publish
-
-# (Optional) Rename for convenience
-Rename-Item .\publish\Vigil.Cli.exe vigil.exe
-
-# Add .\publish (or wherever you put it) to your PATH, then you can do:
-cd C:\path\to\your\incident
-vigil                    # ← launches the Grill-me TUI (the primary way to use it)
-vigil diagnose --help    # ← one-shot / scripting still works
+# Produces .\publish\vigil.exe (AssemblyName is already vigil)
 ```
 
-This produces a true standalone `.exe` that does **not** require .NET to be installed on the target machine. The bare `vigil` command will enter the interactive natural-language session exactly as designed.
+Upload `dist\Vigil-win-x64.zip` to a new GitHub Release (tag e.g. `v1.0.0` to match `Vigil.Cli.csproj` `<Version>`). The `releases/latest/download/...` link in this README resolves to whatever release is marked latest.
 
-You only need to do the publish step once (or whenever you pull new changes to TUI, NL intent, GrillInteractive, or GrillSessionState). Re-publish to pick up fixes (e.g. improved natural language routing to auto-/load + governed /diagnose). After that, just use `vigil` like any other CLI tool.
+Re-publish when TUI, NL intent, `GrillInteractive`, or `GrillSessionState` change so the standalone binary stays in sync with source.
 
 ## Development on the Platform
 
