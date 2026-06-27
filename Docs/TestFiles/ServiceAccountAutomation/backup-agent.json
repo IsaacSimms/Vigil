@@ -1,0 +1,31 @@
+{
+  "runbook": "Nightly-SQL-Backup",
+  "host": "BACKUP-SRV-02",
+  "serviceAccount": "CORP\\SVC-BACKUP-AUTO",
+  "events": [
+    {
+      "timestamp": "2024-06-15T03:00:01Z",
+      "level": "ERROR",
+      "component": "AutomationAgent",
+      "message": "Failed to launch scheduled task under CORP\\SVC-BACKUP-AUTO: logon type not granted (batch)"
+    },
+    {
+      "timestamp": "2024-06-15T03:00:02Z",
+      "level": "ERROR",
+      "component": "AutomationAgent",
+      "message": "Runbook step Impersonate-ServiceAccount failed HRESULT 0x80070569"
+    },
+    {
+      "timestamp": "2024-06-15T03:00:06Z",
+      "level": "WARN",
+      "component": "AutomationAgent",
+      "message": "Fallback interactive token acquisition succeeded — batch path still blocked"
+    },
+    {
+      "timestamp": "2024-06-15T03:00:31Z",
+      "level": "ERROR",
+      "component": "AutomationAgent",
+      "message": "Runbook aborted; no backup files produced for 2024-06-15"
+    }
+  ]
+}

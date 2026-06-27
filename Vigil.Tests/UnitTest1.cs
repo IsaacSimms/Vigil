@@ -1009,4 +1009,75 @@ public class DomainModelTests
         var history = repo.QueryAsync(new TrueSpecification<Diagnosis>()).Result; // reuse existing TrueSpec from file
         history.Should().Contain(d => d.Id == diag.Id);
     }
+
+    // == Keystone: ServiceAccountAutomation hard-mode fixture (repo-only, offline, four heterogeneous sources) == //
+    [Fact]
+    public void ServiceAccountAutomation_fixture_offline_diagnose_ranks_gpo_batch_logon_change()
+    {
+        var scenarioDir = ResolveTestFilesPath("ServiceAccountAutomation");
+        var interpreters = new IArtifactInterpreter[]
+        {
+            new ChangeRecordInterpreter(),
+            new PlainTextInterpreter(),
+            new JsonLogInterpreter()
+        };
+        var selector = new ArtifactInterpreterSelector(interpreters);
+        var assembler = new EvidenceAssembler();
+        var redactor = new NoOpRedactor();
+        var heuristic = new HeuristicDiagnosisAnalyzer();
+        var validator = new DiagnosisValidator(new FakeCitationResolver(true));
+        var repo = new InMemoryDiagnosisRepository();
+        var useCase = new DiagnoseUseCase(selector, assembler, redactor, heuristic, heuristic, validator, repo);
+
+        var sources = new[]
+        {
+            LoadScenarioSource(scenarioDir, "scheduler.log"),
+            LoadScenarioSource(scenarioDir, "changes.txt"),
+            LoadScenarioSource(scenarioDir, "backup-agent.json"),
+            LoadScenarioSource(scenarioDir, "disk-monitor.log")
+        };
+
+        var request = new DiagnoseRequest(
+            sources,
+            new ScopeHints(Symptom: "backup automation failing with service account logon errors"),
+            Offline: true);
+
+        var diagnosis = useCase.Execute(request).Result;
+
+        diagnosis.Causes.Should().NotBeEmpty();
+        diagnosis.Provenance.AnalyzedBy.Should().Be(AnalyzerTier.Heuristic);
+        diagnosis.Provenance.Reason.Should().Be(FallbackReason.OfflineFlag);
+
+        // GPO batch-logon revocation (changes.txt) should outrank disk-capacity noise
+        var top = diagnosis.Causes.First();
+        top.Description.Should().Contain("denied-for-SVC-BACKUP-AUTO");
+        top.Citations.Should().NotBeEmpty();
+
+        var cited = string.Join(" ", diagnosis.Causes.SelectMany(c => c.Citations).Select(c => c.Snippet ?? ""));
+        (cited.Contains("GPO-BackupAutomation", StringComparison.OrdinalIgnoreCase)
+         || cited.Contains("0x80070569", StringComparison.OrdinalIgnoreCase)
+         || cited.Contains("denied-for-SVC-BACKUP-AUTO", StringComparison.OrdinalIgnoreCase))
+            .Should().BeTrue("citations should tie to GPO batch-logon revocation or scheduler logon failures");
+    }
+
+    private static string ResolveTestFilesPath(params string[] segments)
+    {
+        var dir = AppContext.BaseDirectory;
+        while (!string.IsNullOrEmpty(dir))
+        {
+            var testFiles = System.IO.Path.Combine(dir, "Docs", "TestFiles");
+            if (System.IO.Directory.Exists(testFiles))
+                return System.IO.Path.Combine(new[] { testFiles }.Concat(segments).ToArray());
+            dir = System.IO.Directory.GetParent(dir)?.FullName;
+        }
+
+        throw new InvalidOperationException("Docs/TestFiles not found from test output directory.");
+    }
+
+    private static RawSource LoadScenarioSource(string scenarioDir, string fileName)
+    {
+        var path = System.IO.Path.Combine(scenarioDir, fileName);
+        var text = System.IO.File.ReadAllText(path);
+        return new RawSource(fileName, text, null, "test-fixture");
+    }
 }

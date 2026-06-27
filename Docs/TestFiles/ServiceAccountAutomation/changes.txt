@@ -1,0 +1,3 @@
+2024-06-15 02:10:00 - change GPO-BackupAutomation batch-logon-policy to denied-for-SVC-BACKUP-AUTO in corp.local
+2024-06-15 02:12:00 - change GPO-BackupAutomation interactive-logon-policy to unchanged in corp.local
+2024-06-15 02:14:00 - change GPO-BackupAutomation audit-policy to verbose in corp.local
