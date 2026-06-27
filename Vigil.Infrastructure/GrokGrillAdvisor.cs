@@ -1,6 +1,6 @@
 // == GrokGrillAdvisor (primary Implementation of IGrillAdvisor using Grok for free-form NL in TUI sessions) == //
 // Mirrors the Adapter pattern of GrokDiagnosisAnalyzer but without forced tool use / diagnosis schema.
-// Plain chat completions so the model can converse naturally as a debugging partner ("grill-me" style).
+// Plain chat completions so the model can converse naturally as a debugging partner.
 // Receives compact context from SessionState (evidence count, summaries, token usage, last diagnosis, cwd)
 // so responses can reference prior turns and loaded artifacts without leaking full bundles.
 // All OpenAI SDK types confined here. Falls back gracefully if no key.
@@ -41,13 +41,13 @@ public class GrokGrillAdvisor : IGrillAdvisor
             var client = new OpenAIClient(credential, clientOptions);
             var chatClient = client.GetChatClient(_options.Model);
 
-            var sysPrompt = "You are an expert, precise systems debugging partner in an interactive terminal 'grill-me' session. " +
+            var sysPrompt = "You are an expert, precise systems debugging partner in an interactive Vigil terminal session. " +
                             "The engineer is investigating a live incident in a specific working directory. " +
                             "You have access to a compact session context (bounded evidence excerpts per loaded file, token usage so far, previous turns, last formal diagnosis id if any). " +
                             "Reference specific details from the context when relevant. Be concise but helpful. " +
                             "Ask clarifying questions if the evidence is ambiguous. " +
                             "If the user describes analysis of loaded or mentioned files (e.g. 'analyze these files in the folder', 'what is the issue and potential fix') or says 'use /diagnose', the TUI will automatically trigger the formal governed Diagnosis pipeline with citations, validation, and provenance (no need for explicit slash in many cases). " +
-                            "For pure chat or when you want to continue grilling without the formal output, just converse. " +
+                            "For pure chat or when continuing investigation without the formal output, just converse. " +
                             "Never invent evidence that is not in the provided context.";
 
             var userMsg = new StringBuilder();
@@ -77,7 +77,7 @@ public class GrokGrillAdvisor : IGrillAdvisor
         }
         catch (Exception ex)
         {
-            return $"[Grok chat error during grill-me consult: {ex.Message}] Understood the point about \"{message}\". Try /diagnose for the governed path.";
+            return $"[Grok chat error during advisor consult: {ex.Message}] Understood the point about \"{message}\". Try /diagnose for the governed path.";
         }
     }
 }

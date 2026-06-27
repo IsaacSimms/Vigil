@@ -1,10 +1,10 @@
 # Vigil
 
-**An incident-diagnosis engine for systems and platform work — now with an interactive "Grill-me" TUI as the primary experience.**
+**An incident-diagnosis engine for systems and platform work — now with an interactive TUI as the primary experience.**
 
 Vigil helps you figure out what broke by feeding it heterogeneous evidence (logs, change records, configs, code, etc.). It returns governed, cited, ranked diagnoses with a deterministic validation gate, honest provenance, redaction before any model egress, and a zero-cost heuristic fallback.
 
-The **primary way to use Vigil is the interactive Grill-me TUI** (launch with bare `vigil` or `dotnet run --project Vigil.Cli` in a target directory). Talk to it in natural language. It maintains live session state (accumulated evidence, conversation turns, running token usage, compact context for the LLM). Use `/diagnose` (or just describe the problem) to trigger the full governed pipeline at any time. Slash commands keep power-user flags and workflows inside the conversation.
+The **primary way to use Vigil is the interactive TUI** (launch with bare `vigil` or `dotnet run --project Vigil.Cli` in a target directory). Talk to it in natural language. It maintains live session state (accumulated evidence, conversation turns, running token usage, compact context for the LLM). Use `/diagnose` (or just describe the problem) to trigger the full governed pipeline at any time. Slash commands keep power-user flags and workflows inside the conversation.
 
 One-shot/scripted usage (`vigil diagnose ...`) is fully preserved for pipes, CI, automation, and power users.
 
@@ -20,7 +20,7 @@ Unzip anywhere, open PowerShell in that folder, and run `.\vigil`. No SDK, runti
 
 Current release: [v1.0.0](https://github.com/IsaacSimms/Vigil/releases/tag/v1.0.0).
 
-## Quick Start (Interactive Grill-me Session — Primary UX)
+## Quick Start (Interactive Session — Primary UX)
 
 ### From the GitHub Release (recommended)
 
@@ -78,7 +78,7 @@ exit
 
 The session shows a banner with the launch directory, tracks evidence count + turns + **running token usage + compact context** (passed to every NL turn), and lets you interleave free conversation with formal diagnoses.
 
-## Using the Grill-me TUI
+## Using the Interactive TUI
 
 ### Launch
 - Release: `cd /your/dir; .\vigil` (from the unzipped [GitHub Release](https://github.com/IsaacSimms/Vigil/releases/latest))
@@ -214,9 +214,9 @@ Existing keystone-style tests (recorded paths, heuristic doubles, validator gate
 - Strict onion (project refs enforced): Domain (entities + seams) → Application (orchestration + thin coordinators) → Infrastructure (adapters, Grok + heuristic, interpreters, repos) .
 - Presentation (`Vigil.Cli`) references Application for contracts and Infra **only** at composition root for DI.
 - Primary Seams (UL): `IDiagnosisAnalyzer`, `IArtifactInterpreter` + selector, `IVigilClient`, and the new `IGrillAdvisor` (for conversational NL).
-- All business logic for diagnosis stays in C# behind seams. The TUI runner in Cli is "thicker" (session state, intent parsing, context assembly, action dispatch) because the interactive Grill-me experience is the stated primary goal — this was an explicit user-approved loosening while keeping the heart (onion, testable seams, no SDK leakage past Infra, determinism around the model, title comments on important blocks, etc.).
+- All business logic for diagnosis stays in C# behind seams. The TUI runner in Cli is "thicker" (session state, intent parsing, context assembly, action dispatch) because the interactive TUI experience is the stated primary goal — this was an explicit user-approved loosening while keeping the heart (onion, testable seams, no SDK leakage past Infra, determinism around the model, title comments on important blocks, etc.).
 - `SessionState` + `GrillInteractive` (pure helpers in Application) are the reusable non-UI core of the TUI.
-- `GrokGrillAdvisor` is the Adapter for free-form chat (plain completions, context injected, good grill-me system prompt). The structured diagnosis path is untouched.
+- `GrokGrillAdvisor` is the Adapter for free-form chat (plain completions, context injected, conversational system prompt). The structured diagnosis path is untouched.
 
 See `docs/Vigil-SystemsDesign.md` and the Mermaid diagrams for the locked core design. The interactive TUI layers on top without rewriting the trust contract.
 
@@ -236,9 +236,9 @@ Follow title comments (`// == Title Here == //`), only `/// <summary>` at type/f
 
 ## Features (Current)
 
-- **Primary**: Interactive Grill-me TUI with natural language, live `GrillSessionState` (evidence, turns, running tokens + context passed to LLM), `/load` from launch dir, easy interleaving with full governed diagnoses.
+- **Primary**: Interactive TUI with natural language, live `GrillSessionState` (evidence, turns, running tokens + context passed to LLM), `/load` from launch dir, easy interleaving with full governed diagnoses.
 - Full diagnose pipeline (text evidence, auto-interpret, rank+cap, redaction, Grok or heuristic, deterministic citation validation + ≤5 cap, provenance, in-memory persist + query).
-- Seams for evolution (analyzer, interpreters, client transport, now grill advisor).
+- Seams for evolution (analyzer, interpreters, client transport, `IGrillAdvisor`).
 - `--offline` / heuristic always available.
 - `--dry-run`, `--json`, etc. in both TUI and one-shot.
 - Zero-cost, honest Liskov-substitute heuristic baseline.

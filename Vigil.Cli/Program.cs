@@ -1,4 +1,4 @@
-// == Program (composition root for Vigil.Cli per §3, AGENTS, grill-me) == //
+// == Program (composition root for Vigil.Cli per §3, AGENTS) == //
 
 using System;
 using System.Collections.Generic;
@@ -119,13 +119,13 @@ public static class Program
             return new Vigil.Application.Clients.InProcessVigilClient(useCase, grillAdvisor);
         });
 
-        // == Interactive Grill-me launch guard (primary UX per approved plan) == //
+        // == Interactive TUI launch guard (primary UX) == //
         // Bare invocation (no subcommand) launches the TUI session with natural language to the backend.
         if (Vigil.Application.GrillInteractive.ShouldRunInteractive(args, isTty: !Console.IsInputRedirected))
         {
             var sp = registrations.BuildServiceProvider();
             var client = sp.GetRequiredService<IVigilClient>();
-            return RunGrillMeSession(client, Environment.CurrentDirectory);
+            return RunInteractiveSession(client, Environment.CurrentDirectory);
         }
 
         var registrar = new TypeRegistrar(registrations);
@@ -141,14 +141,14 @@ public static class Program
         return app.Run(args);
     }
 
-    // == Minimal working Grill-me TUI (activated on bare launch) == //
-    // Demonstrates the approved experience: persistent SessionState with running tokens + context,
+    // == Interactive TUI (activated on bare launch) == //
+    // Persistent SessionState with running tokens + context,
     // NL → Consult (context-aware), /load for evidence, /diagnose to interleave the real pipeline.
-    static int RunGrillMeSession(IVigilClient client, string launchDir)
+    static int RunInteractiveSession(IVigilClient client, string launchDir)
     {
         var state = new Vigil.Application.GrillSessionState(launchDir);
 
-        AnsiConsole.Write(new Rule("[bold green]Vigil — Grill-me session[/]"));
+        AnsiConsole.Write(new Rule("[bold green]Vigil — interactive session[/]"));
         AnsiConsole.MarkupLine($"[grey]In[/] [cyan]{launchDir}[/]");
         AnsiConsole.MarkupLine("[grey]Type naturally. /help, /load, /paste, /diagnose, /status, exit.[/]");
         AnsiConsole.WriteLine();
@@ -167,7 +167,7 @@ public static class Program
                 if (c is "help" or "?" )
                 {
                     AnsiConsole.MarkupLine("[yellow]/load <rel-path>  /paste [name]  (paste text, then END)[/]");
-                    AnsiConsole.MarkupLine("[yellow]/diagnose [--symptom \"...\"] [--offline]  diagnose me — <symptom>[/]");
+                    AnsiConsole.MarkupLine("[yellow]/diagnose [--symptom \"...\"] [--offline][/]");
                     AnsiConsole.MarkupLine("[yellow]/status  exit[/]");
                     continue;
                 }
@@ -355,7 +355,7 @@ public static class Program
     }
 }
 
-// Simple TypeRegistrar for Spectre + Microsoft DI (per grill-me)
+// Simple TypeRegistrar for Spectre + Microsoft DI
 public sealed class TypeRegistrar : ITypeRegistrar
 {
     private readonly IServiceCollection _services;
